@@ -2,6 +2,7 @@ use super::model_capabilities::{
     CapabilityProbe, CapabilityProber, Compatibility, GgufHeaderProber,
 };
 use crate::settings::{get_settings, write_settings};
+use crate::utils::LockExt;
 use anyhow::Result;
 use flate2::read::GzDecoder;
 use hf_hub::api::tokio::{ApiBuilder, CancellationToken, Progress};
@@ -413,7 +414,7 @@ impl HfDownloadProgress {
 
     /// Instant of the most recent sign of life from the transfer.
     fn last_activity(&self) -> Instant {
-        self.state.lock().unwrap().last_activity
+        self.state.lock_or_recover().last_activity
     }
 
     fn emit(&self, downloaded: u64, total: u64) {
@@ -437,7 +438,7 @@ impl HfDownloadProgress {
 impl Progress for HfDownloadProgress {
     async fn init(&mut self, size: usize, _filename: &str) {
         {
-            let mut st = self.state.lock().unwrap();
+            let mut st = self.state.lock_or_recover();
             st.total = size as u64;
             st.downloaded = 0;
             st.last_emit = Instant::now();
@@ -448,7 +449,7 @@ impl Progress for HfDownloadProgress {
 
     async fn update(&mut self, size: usize) {
         let (downloaded, total, emit) = {
-            let mut st = self.state.lock().unwrap();
+            let mut st = self.state.lock_or_recover();
             st.downloaded = st.downloaded.saturating_add(size as u64);
             let now = Instant::now();
             st.last_activity = now;
@@ -467,7 +468,7 @@ impl Progress for HfDownloadProgress {
 
     async fn finish(&mut self) {
         let total = {
-            let st = self.state.lock().unwrap();
+            let st = self.state.lock_or_recover();
             st.total.max(st.downloaded)
         };
         self.emit(total, total);
@@ -502,12 +503,12 @@ impl<'a> Drop for DownloadCleanup<'a> {
             return;
         }
         {
-            let mut models = self.available_models.lock().unwrap();
+            let mut models = self.available_models.lock_or_recover();
             if let Some(model) = models.get_mut(self.model_id.as_str()) {
                 model.is_downloading = false;
             }
         }
-        self.cancel_flags.lock().unwrap().remove(&self.model_id);
+        self.cancel_flags.lock_or_recover().remove(&self.model_id);
     }
 }
 
@@ -1120,6 +1121,13 @@ impl ModelManager {
         // find. Additive — see `seed_catalog_models`.
         Self::seed_catalog_models(&mut available_models);
 
+        // Register user-defined models before the on-disk scans, so their files
+        // are recognised instead of showing up as anonymous drop-ins.
+        Self::seed_user_defined_models(
+            &get_settings(app_handle).custom_models,
+            &mut available_models,
+        );
+
         // Auto-discover custom transcribe-cpp models (.bin / .gguf) in the models directory
         if let Err(e) = Self::discover_custom_transcribe_models(&models_dir, &mut available_models)
         {
@@ -1155,7 +1163,7 @@ impl ModelManager {
 
     pub fn get_available_models(&self) -> Vec<ModelInfo> {
         let mut list: Vec<ModelInfo> = {
-            let models = self.available_models.lock().unwrap();
+            let models = self.available_models.lock_or_recover();
             models.values().cloned().collect()
         };
         // Stable, reasonable order: catalog editorial rank first (lower = higher
@@ -1191,6 +1199,72 @@ impl ModelManager {
             }
         }
         info!("Seeded {} catalog model(s) into the registry", added);
+    }
+
+    /// Register user-defined models from settings. They replace any entry
+    /// with the same id, since the definition is authoritative.
+    fn seed_user_defined_models(
+        defs: &[crate::settings::CustomModelDef],
+        available_models: &mut HashMap<String, ModelInfo>,
+    ) {
+        for def in defs {
+            available_models.insert(def.id.clone(), super::custom_models::to_model_info(def));
+        }
+        if !defs.is_empty() {
+            info!("Registered {} user-defined model(s)", defs.len());
+        }
+    }
+
+    /// Add or replace a user-defined model in the live registry.
+    pub fn register_user_defined_model(&self, def: &crate::settings::CustomModelDef) -> Result<()> {
+        {
+            let mut models = self.available_models.lock_or_recover();
+            let mut info = super::custom_models::to_model_info(def);
+            // Keep capabilities learned at load time when only the name or
+            // language hint changed.
+            if let Some(existing) = models.get(&def.id) {
+                info.supported_languages = existing.supported_languages.clone();
+                info.supports_language_selection = existing.supports_language_selection;
+                info.supports_language_detection = existing.supports_language_detection;
+                info.supports_streaming = existing.supports_streaming;
+                info.supports_translation = existing.supports_translation;
+            }
+            models.insert(def.id.clone(), info);
+        }
+        self.update_download_status()?;
+        let _ = self.app_handle.emit("models-updated", ());
+        Ok(())
+    }
+
+    /// Remove a user-defined model from the registry, optionally deleting its
+    /// downloaded file first.
+    pub fn unregister_user_defined_model(&self, model_id: &str, delete_file: bool) -> Result<()> {
+        if self.cancel_flags.lock_or_recover().contains_key(model_id) {
+            self.cancel_download(model_id)?;
+        }
+        if delete_file {
+            let is_downloaded = self
+                .get_model_info(model_id)
+                .is_some_and(|m| m.is_downloaded);
+            if is_downloaded {
+                self.delete_model(model_id)?;
+            }
+        }
+        self.available_models.lock_or_recover().remove(model_id);
+        let _ = self.app_handle.emit("models-updated", ());
+        Ok(())
+    }
+
+    /// After a user-defined model is downloaded, make sure the file is a format
+    /// transcribe-cpp can load. An invalid file is deleted.
+    pub fn verify_user_defined_download(&self, model_id: &str) -> Result<()> {
+        let path = self.get_model_path(model_id)?;
+        if let Err(e) = super::custom_models::verify_model_file(&path) {
+            warn!("Rejecting downloaded file for {}: {}", model_id, e);
+            let _ = self.delete_model(model_id);
+            return Err(e);
+        }
+        Ok(())
     }
 
     /// Claim the single rescan slot. Returns a guard that releases it on drop,
@@ -1229,7 +1303,7 @@ impl ModelManager {
         // Snapshot the current registry and discover against the copy off-lock.
         // The discover_* helpers are purely additive (they skip ids already in
         // the map), so the snapshot ends up as {current} ∪ {newly-found}.
-        let mut snapshot = self.available_models.lock().unwrap().clone();
+        let mut snapshot = self.available_models.lock_or_recover().clone();
         if let Err(e) = Self::discover_custom_transcribe_models(&self.models_dir, &mut snapshot) {
             warn!("Rescan: failed to discover custom models: {}", e);
         }
@@ -1239,7 +1313,7 @@ impl ModelManager {
         // leaves every existing entry exactly as it was.
         let mut added = 0usize;
         {
-            let mut live = self.available_models.lock().unwrap();
+            let mut live = self.available_models.lock_or_recover();
             for (id, info) in snapshot {
                 if let std::collections::hash_map::Entry::Vacant(entry) = live.entry(id) {
                     entry.insert(info);
@@ -1258,7 +1332,7 @@ impl ModelManager {
     }
 
     pub fn get_model_info(&self, model_id: &str) -> Option<ModelInfo> {
-        let models = self.available_models.lock().unwrap();
+        let models = self.available_models.lock_or_recover();
         models.get(model_id).cloned()
     }
 
@@ -1284,7 +1358,7 @@ impl ModelManager {
         supported_languages: Vec<String>,
     ) {
         let supported_languages = canonicalize_supported_languages(supported_languages);
-        let mut models = self.available_models.lock().unwrap();
+        let mut models = self.available_models.lock_or_recover();
         if let Some(model) = models.get_mut(model_id) {
             model.supports_streaming = supports_streaming;
             model.supports_translation = supports_translation;
@@ -1373,9 +1447,13 @@ impl ModelManager {
     fn update_download_status(&self) -> Result<()> {
         // Snapshot in-flight download ids before taking the registry lock (the
         // two locks are never nested) so a mid-download entry is never dropped.
-        let downloading_ids: HashSet<String> =
-            self.cancel_flags.lock().unwrap().keys().cloned().collect();
-        let mut models = self.available_models.lock().unwrap();
+        let downloading_ids: HashSet<String> = self
+            .cancel_flags
+            .lock_or_recover()
+            .keys()
+            .cloned()
+            .collect();
+        let mut models = self.available_models.lock_or_recover();
         let mut vanished_models: Vec<String> = Vec::new();
 
         for model in models.values_mut() {
@@ -1411,7 +1489,7 @@ impl ModelManager {
                 // Clean up any leftover .extracting directories from interrupted extractions
                 // But only if this model is NOT currently being extracted
                 let is_currently_extracting = {
-                    let extracting = self.extracting_models.lock().unwrap();
+                    let extracting = self.extracting_models.lock_or_recover();
                     extracting.contains(&model.id)
                 };
                 if extracting_path.exists() && !is_currently_extracting {
@@ -1521,7 +1599,7 @@ impl ModelManager {
         // checking only whether the id exists is not sufficient.
         if !settings.selected_model.is_empty() {
             let is_available = {
-                let models = self.available_models.lock().unwrap();
+                let models = self.available_models.lock_or_recover();
                 Self::selected_model_is_available(&models, &settings.selected_model)
             };
 
@@ -1910,7 +1988,7 @@ impl ModelManager {
 
         // Mark downloading; the guard resets the flag on any error path.
         {
-            let mut models = self.available_models.lock().unwrap();
+            let mut models = self.available_models.lock_or_recover();
             if let Some(model) = models.get_mut(&model_id) {
                 model.is_downloading = true;
             }
@@ -1920,7 +1998,7 @@ impl ModelManager {
         // transfer promptly. The guard removes it on every exit path.
         let cancel_token = CancellationToken::new();
         {
-            let mut flags = self.cancel_flags.lock().unwrap();
+            let mut flags = self.cancel_flags.lock_or_recover();
             flags.insert(model_id.clone(), cancel_token.clone());
         }
 
@@ -2142,7 +2220,7 @@ impl ModelManager {
 
         cleanup.disarmed = true;
         self.update_download_status()?;
-        self.cancel_flags.lock().unwrap().remove(&model_id);
+        self.cancel_flags.lock_or_recover().remove(&model_id);
         let _ = self.app_handle.emit("model-download-complete", &model_id);
         info!("HF model {} downloaded", model_id);
         Ok(())
@@ -2191,7 +2269,7 @@ impl ModelManager {
 
     pub async fn download_model(&self, model_id: &str) -> Result<()> {
         let model_info = {
-            let models = self.available_models.lock().unwrap();
+            let models = self.available_models.lock_or_recover();
             models.get(model_id).cloned()
         };
 
@@ -2226,7 +2304,7 @@ impl ModelManager {
 
         // Mark as downloading
         {
-            let mut models = self.available_models.lock().unwrap();
+            let mut models = self.available_models.lock_or_recover();
             if let Some(model) = models.get_mut(model_id) {
                 model.is_downloading = true;
             }
@@ -2235,7 +2313,7 @@ impl ModelManager {
         // Create cancellation token for this download
         let cancel_token = CancellationToken::new();
         {
-            let mut flags = self.cancel_flags.lock().unwrap();
+            let mut flags = self.cancel_flags.lock_or_recover();
             flags.insert(model_id.to_string(), cancel_token.clone());
         }
 
@@ -2274,7 +2352,7 @@ impl ModelManager {
         if model_info.is_directory {
             // Track that this model is being extracted
             {
-                let mut extracting = self.extracting_models.lock().unwrap();
+                let mut extracting = self.extracting_models.lock_or_recover();
                 extracting.insert(model_id.to_string());
             }
 
@@ -2311,7 +2389,7 @@ impl ModelManager {
                 let _ = fs::remove_file(&partial_path);
                 // Remove from extracting set
                 {
-                    let mut extracting = self.extracting_models.lock().unwrap();
+                    let mut extracting = self.extracting_models.lock_or_recover();
                     extracting.remove(model_id);
                 }
                 let _ = self.app_handle.emit(
@@ -2350,7 +2428,7 @@ impl ModelManager {
             info!("Successfully extracted archive for model: {}", model_id);
             // Remove from extracting set
             {
-                let mut extracting = self.extracting_models.lock().unwrap();
+                let mut extracting = self.extracting_models.lock_or_recover();
                 extracting.remove(model_id);
             }
             // Emit extraction completed event
@@ -2367,14 +2445,14 @@ impl ModelManager {
         // additionally sets is_downloaded = true.
         cleanup.disarmed = true;
         {
-            let mut models = self.available_models.lock().unwrap();
+            let mut models = self.available_models.lock_or_recover();
             if let Some(model) = models.get_mut(model_id) {
                 model.is_downloading = false;
                 model.is_downloaded = true;
                 model.partial_size = 0;
             }
         }
-        self.cancel_flags.lock().unwrap().remove(model_id);
+        self.cancel_flags.lock_or_recover().remove(model_id);
 
         // Emit completion event
         let _ = self.app_handle.emit("model-download-complete", model_id);
@@ -2391,7 +2469,7 @@ impl ModelManager {
         debug!("ModelManager: delete_model called for: {}", model_id);
 
         let model_info = {
-            let models = self.available_models.lock().unwrap();
+            let models = self.available_models.lock_or_recover();
             models.get(model_id).cloned()
         };
 
@@ -2451,7 +2529,7 @@ impl ModelManager {
             // seeds defaults), so deleting one un-discovers it rather than
             // leaving a permanent "(Q4_K_M)" row in the list.
             if is_alternate_quant {
-                self.available_models.lock().unwrap().remove(model_id);
+                self.available_models.lock_or_recover().remove(model_id);
             }
             self.update_download_status()?;
             let _ = self.app_handle.emit("model-deleted", model_id);
@@ -2506,7 +2584,7 @@ impl ModelManager {
         // Custom models should be removed from the list entirely since they
         // have no download URL and can't be re-downloaded
         if model_info.is_custom {
-            let mut models = self.available_models.lock().unwrap();
+            let mut models = self.available_models.lock_or_recover();
             models.remove(model_id);
             debug!("ModelManager: removed custom model from available models");
         } else {
@@ -2527,7 +2605,7 @@ impl ModelManager {
     /// unrelated in-flight download.
     fn mark_model_unavailable(&self, model_id: &str) {
         let removed = {
-            let mut models = self.available_models.lock().unwrap();
+            let mut models = self.available_models.lock_or_recover();
             let should_remove = models
                 .get(model_id)
                 .is_some_and(Self::disappears_when_missing);
@@ -2637,7 +2715,7 @@ impl ModelManager {
         // aborts its in-flight chunk tasks and unwinds promptly; the URL path
         // observes it on the next chunk of its stream loop.
         {
-            let flags = self.cancel_flags.lock().unwrap();
+            let flags = self.cancel_flags.lock_or_recover();
             if let Some(token) = flags.get(model_id) {
                 token.cancel();
                 info!("Cancellation token triggered for: {}", model_id);
@@ -2648,7 +2726,7 @@ impl ModelManager {
 
         // Update state immediately for UI responsiveness
         {
-            let mut models = self.available_models.lock().unwrap();
+            let mut models = self.available_models.lock_or_recover();
             if let Some(model) = models.get_mut(model_id) {
                 model.is_downloading = false;
             }
@@ -2866,6 +2944,33 @@ mod tests {
         let result = ModelManager::discover_custom_transcribe_models(&models_dir, &mut models);
         assert!(result.is_ok());
         assert_eq!(models.len(), count_before);
+    }
+
+    #[test]
+    fn test_user_defined_url_model_not_rediscovered_as_drop_in() {
+        use crate::settings::{CustomModelDef, CustomModelSource};
+        let temp_dir = TempDir::new().unwrap();
+        fs::write(temp_dir.path().join("custom-nb.bin"), b"lmgg").unwrap();
+
+        let def = CustomModelDef {
+            id: "custom:url/nb".into(),
+            name: "NB".into(),
+            source: CustomModelSource::Url {
+                url: "https://example.com/nb.bin".into(),
+                sha256: None,
+                filename: "custom-nb.bin".into(),
+            },
+            language_hint: Some("no".into()),
+            size_bytes: None,
+        };
+        let mut models = HashMap::new();
+        ModelManager::seed_user_defined_models(&[def], &mut models);
+        ModelManager::discover_custom_transcribe_models(temp_dir.path(), &mut models).unwrap();
+
+        assert_eq!(models.len(), 1);
+        let info = &models["custom:url/nb"];
+        assert!(!info.is_custom);
+        assert!(!ModelManager::disappears_when_missing(info));
     }
 
     #[test]

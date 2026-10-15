@@ -2,8 +2,8 @@ use crate::managers::audio::AudioRecordingManager;
 use crate::managers::transcription::TranscriptionManager;
 use crate::shortcut;
 use crate::TranscriptionCoordinator;
-use log::info;
-use std::sync::Arc;
+use log::{info, warn};
+use std::sync::{Arc, Mutex, MutexGuard};
 use tauri::{AppHandle, Manager};
 
 // Re-export all utility modules for easy access
@@ -11,6 +11,27 @@ use tauri::{AppHandle, Manager};
 pub use crate::clipboard::*;
 pub use crate::overlay::*;
 pub use crate::tray::*;
+
+/// Lock a mutex, recovering if a thread panicked while holding it.
+///
+/// A poisoned `std::sync::Mutex` makes every later `lock().unwrap()` panic
+/// too, so one bug would cascade into crashing the whole app. The data
+/// guarded here (registries, flags, handles) stays usable after a panic, so
+/// continuing with it is preferable to crashing.
+pub trait LockExt<T> {
+    fn lock_or_recover(&self) -> MutexGuard<'_, T>;
+}
+
+impl<T> LockExt<T> for Mutex<T> {
+    #[track_caller]
+    fn lock_or_recover(&self) -> MutexGuard<'_, T> {
+        self.lock().unwrap_or_else(|poisoned| {
+            let location = std::panic::Location::caller();
+            warn!("Recovered poisoned mutex at {location}; a thread panicked while holding it");
+            poisoned.into_inner()
+        })
+    }
+}
 
 /// Preserve diagnostic text in development builds, but redact it in releases.
 /// Do not use for secrets such as API keys, which must always be redacted.
@@ -195,5 +216,27 @@ mod tests {
             assert!(!env_flag_enabled("HANDY_TEST_FLAG_FALSY"), "{value:?}");
         }
         std::env::remove_var("HANDY_TEST_FLAG_FALSY");
+    }
+}
+
+#[cfg(test)]
+mod lock_ext_tests {
+    use super::LockExt;
+    use std::sync::{Arc, Mutex};
+
+    #[test]
+    fn recovers_poisoned_mutex() {
+        let shared = Arc::new(Mutex::new(vec![1, 2]));
+        let clone = shared.clone();
+        let _ = std::thread::spawn(move || {
+            let mut guard = clone.lock().unwrap();
+            guard.push(3);
+            panic!("poison the mutex");
+        })
+        .join();
+
+        assert!(shared.is_poisoned());
+        let guard = shared.lock_or_recover();
+        assert_eq!(*guard, vec![1, 2, 3]);
     }
 }

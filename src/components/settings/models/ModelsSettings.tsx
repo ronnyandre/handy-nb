@@ -6,8 +6,11 @@ import {
   ChevronDown,
   Globe,
   Languages,
+  Pencil,
+  Plus,
   RefreshCw,
   Search,
+  Trash2,
 } from "lucide-react";
 import type { ModelCardStatus } from "@/components/onboarding";
 import { ModelCard } from "@/components/onboarding";
@@ -17,7 +20,9 @@ import {
   MODEL_CAPABILITY_LANGUAGES,
   supportsLanguageCode,
 } from "@/lib/constants/languages.ts";
-import type { ModelInfo } from "@/bindings";
+import type { CustomModelDef, ModelInfo } from "@/bindings";
+import { useSettingsStore } from "@/stores/settingsStore";
+import { CustomModelDialog } from "./CustomModelDialog";
 
 // check if model supports a language based on its supported_languages list
 const modelSupportsLanguage = (model: ModelInfo, langCode: string): boolean => {
@@ -32,6 +37,17 @@ const isLegacyModel = (model: ModelInfo): boolean =>
 
 export const ModelsSettings: React.FC = () => {
   const { t } = useTranslation();
+  const [customDialogOpen, setCustomDialogOpen] = useState(false);
+  const [editingCustomModel, setEditingCustomModel] =
+    useState<CustomModelDef | null>(null);
+  const customModelDefs = useSettingsStore(
+    (state) => state.settings?.custom_models,
+  );
+  const customModels = useMemo(() => {
+    const byId = new Map<string, CustomModelDef>();
+    for (const def of customModelDefs ?? []) byId.set(def.id, def);
+    return byId;
+  }, [customModelDefs]);
   const [switchingModelId, setSwitchingModelId] = useState<string | null>(null);
   const [searchQuery, setSearchQuery] = useState("");
   const [filterStreaming, setFilterStreaming] = useState(false);
@@ -56,6 +72,7 @@ export const ModelsSettings: React.FC = () => {
     selectModel,
     deleteModel,
     rescanLocalModels,
+    removeCustomModel,
   } = useModelStore();
 
   // click outside handler for language dropdown
@@ -167,6 +184,38 @@ export const ModelsSettings: React.FC = () => {
     }
   };
 
+  const openAddCustomModel = () => {
+    setEditingCustomModel(null);
+    setCustomDialogOpen(true);
+  };
+
+  const openEditCustomModel = (def: CustomModelDef) => {
+    setEditingCustomModel(def);
+    setCustomDialogOpen(true);
+  };
+
+  const handleRemoveCustomModel = async (def: CustomModelDef) => {
+    const model = models.find((m: ModelInfo) => m.id === def.id);
+    const confirmed = await ask(
+      t("settings.models.custom.removeConfirm", { modelName: def.name }),
+      { title: t("settings.models.custom.removeTitle"), kind: "warning" },
+    );
+    if (!confirmed) return;
+    const deleteFile = model?.is_downloaded
+      ? await ask(t("settings.models.custom.removeDeleteFile"), {
+          title: t("settings.models.custom.removeTitle"),
+          kind: "info",
+          okLabel: t("settings.models.custom.deleteFile"),
+          cancelLabel: t("settings.models.custom.keepFile"),
+        })
+      : false;
+    try {
+      await removeCustomModel(def.id, deleteFile);
+    } catch (err) {
+      console.error(`Failed to remove custom model ${def.id}:`, err);
+    }
+  };
+
   const handleModelCancel = async (modelId: string) => {
     try {
       await cancelDownload(modelId);
@@ -180,7 +229,13 @@ export const ModelsSettings: React.FC = () => {
     const q = searchQuery.trim().toLowerCase();
     return models.filter((model: ModelInfo) => {
       // Hide deprecated legacy (.bin/ONNX) downloads unless already on disk.
-      if (isLegacyModel(model) && !model.is_downloaded) return false;
+      // User-defined URL models are not legacy and always stay visible.
+      if (
+        isLegacyModel(model) &&
+        !model.is_downloaded &&
+        !customModels.has(model.id)
+      )
+        return false;
       if (languageFilter !== "all") {
         if (!modelSupportsLanguage(model, languageFilter)) return false;
       }
@@ -193,7 +248,14 @@ export const ModelsSettings: React.FC = () => {
       }
       return true;
     });
-  }, [models, languageFilter, filterStreaming, filterTranslation, searchQuery]);
+  }, [
+    models,
+    languageFilter,
+    filterStreaming,
+    filterTranslation,
+    searchQuery,
+    customModels,
+  ]);
 
   // Split filtered models into downloaded (including custom) and available sections
   const { downloadedModels, availableModels } = useMemo(() => {
@@ -203,6 +265,7 @@ export const ModelsSettings: React.FC = () => {
     for (const model of filteredModels) {
       if (
         model.is_custom ||
+        customModels.has(model.id) ||
         model.is_downloaded ||
         model.id in downloadingModels ||
         model.id in extractingModels
@@ -217,7 +280,9 @@ export const ModelsSettings: React.FC = () => {
     downloaded.sort((a, b) => {
       if (a.id === currentModel) return -1;
       if (b.id === currentModel) return 1;
-      if (a.is_custom !== b.is_custom) return a.is_custom ? 1 : -1;
+      const aCustom = a.is_custom || customModels.has(a.id);
+      const bCustom = b.is_custom || customModels.has(b.id);
+      if (aCustom !== bCustom) return aCustom ? 1 : -1;
       return 0;
     });
 
@@ -225,7 +290,13 @@ export const ModelsSettings: React.FC = () => {
       downloadedModels: downloaded,
       availableModels: available,
     };
-  }, [filteredModels, downloadingModels, extractingModels, currentModel]);
+  }, [
+    filteredModels,
+    downloadingModels,
+    extractingModels,
+    currentModel,
+    customModels,
+  ]);
 
   if (loading) {
     return (
@@ -268,6 +339,16 @@ export const ModelsSettings: React.FC = () => {
               {t("settings.models.yourModels")}
             </h2>
             <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={openAddCustomModel}
+                title={t("settings.models.custom.addTooltip")}
+                aria-label={t("settings.models.custom.addTooltip")}
+                className="flex items-center gap-1.5 h-8 px-3 text-sm font-medium rounded-lg bg-mid-gray/10 text-text/60 hover:bg-mid-gray/20 transition-colors"
+              >
+                <Plus className="w-3.5 h-3.5" />
+                {t("settings.models.custom.addButton")}
+              </button>
               {/* Rescan local sources for models added outside Handy */}
               <button
                 type="button"
@@ -406,20 +487,56 @@ export const ModelsSettings: React.FC = () => {
               </div>
             </div>
           </div>
-          {downloadedModels.map((model: ModelInfo) => (
-            <ModelCard
-              key={model.id}
-              model={model}
-              status={getModelStatus(model.id)}
-              onSelect={handleModelSelect}
-              onDownload={handleModelDownload}
-              onDelete={handleModelDelete}
-              onCancel={handleModelCancel}
-              downloadProgress={getDownloadProgress(model.id)}
-              downloadSpeed={getDownloadSpeed(model.id)}
-              showRecommended={false}
-            />
-          ))}
+          {downloadedModels.map((model: ModelInfo) => {
+            const customDef = customModels.get(model.id);
+            const card = (
+              <ModelCard
+                key={model.id}
+                model={model}
+                status={getModelStatus(model.id)}
+                onSelect={handleModelSelect}
+                onDownload={handleModelDownload}
+                onDelete={handleModelDelete}
+                onCancel={handleModelCancel}
+                downloadProgress={getDownloadProgress(model.id)}
+                downloadSpeed={getDownloadSpeed(model.id)}
+                showRecommended={false}
+              />
+            );
+            if (!customDef) return card;
+            return (
+              <div key={model.id} className="space-y-1">
+                {card}
+                <div className="flex items-center justify-end gap-1 px-1 text-xs text-text/50">
+                  {customDef.language_hint && (
+                    <span className="mr-auto">
+                      {t("settings.models.custom.languageBadge", {
+                        language:
+                          getLanguageLabel(customDef.language_hint) ||
+                          customDef.language_hint,
+                      })}
+                    </span>
+                  )}
+                  <button
+                    type="button"
+                    onClick={() => openEditCustomModel(customDef)}
+                    className="flex items-center gap-1 px-2 py-1 rounded-md hover:bg-mid-gray/10 hover:text-text"
+                  >
+                    <Pencil className="w-3 h-3" />
+                    {t("settings.models.custom.edit")}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => handleRemoveCustomModel(customDef)}
+                    className="flex items-center gap-1 px-2 py-1 rounded-md hover:bg-red-500/10 hover:text-red-400"
+                  >
+                    <Trash2 className="w-3 h-3" />
+                    {t("settings.models.custom.remove")}
+                  </button>
+                </div>
+              </div>
+            );
+          })}
         </div>
 
         {/* Available Models Section */}
@@ -444,6 +561,11 @@ export const ModelsSettings: React.FC = () => {
             ))}
           </div>
         )}
+        <CustomModelDialog
+          open={customDialogOpen}
+          onOpenChange={setCustomDialogOpen}
+          editing={editingCustomModel}
+        />
         {filteredModels.length === 0 && (
           <div className="text-center py-8 text-text/50">
             {t("settings.models.noModelsMatch")}

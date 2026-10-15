@@ -691,6 +691,7 @@ pub fn change_translate_to_english_setting(app: AppHandle, enabled: bool) -> Res
 pub fn change_selected_language_setting(app: AppHandle, language: String) -> Result<(), String> {
     let mut settings = settings::get_settings(&app);
     settings.selected_language = language;
+    settings.language_from_hint = false;
     settings::write_settings(&app, settings);
     Ok(())
 }
@@ -1403,7 +1404,21 @@ pub fn change_show_tray_icon_setting(app: AppHandle, enabled: bool) -> Result<()
 
     // Apply change immediately
     tray::set_tray_visibility(&app, enabled);
+    // Hiding the tray may force the Dock icon back on.
+    #[cfg(target_os = "macos")]
+    crate::apply_dock_visibility(&app);
 
+    Ok(())
+}
+
+#[tauri::command]
+#[specta::specta]
+pub fn change_show_in_dock_setting(app: AppHandle, enabled: bool) -> Result<(), String> {
+    let mut settings = settings::get_settings(&app);
+    settings.show_in_dock = enabled;
+    settings::write_settings(&app, settings);
+    #[cfg(target_os = "macos")]
+    crate::apply_dock_visibility(&app);
     Ok(())
 }
 

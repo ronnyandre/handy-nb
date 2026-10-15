@@ -9,6 +9,7 @@ use crate::settings::{
     get_settings, AppSettings, ChineseScript, ModelUnloadTimeout, OrtAcceleratorSetting,
     TranscribeAcceleratorSetting,
 };
+use crate::utils::LockExt;
 use anyhow::Result;
 use log::{debug, error, info, warn};
 use serde::{Deserialize, Serialize};
@@ -141,7 +142,7 @@ impl StreamRouter {
     /// still open.
     fn open(&self) -> mpsc::Receiver<StreamCmd> {
         let (tx, rx) = mpsc::channel::<StreamCmd>();
-        *self.tx.lock().unwrap() = Some(tx);
+        *self.tx.lock_or_recover() = Some(tx);
         self.open.store(true, Ordering::Relaxed);
         rx
     }
@@ -150,14 +151,14 @@ impl StreamRouter {
     /// sender so the caller can send the final `Finalize`/`Cancel` command.
     fn take(&self) -> Option<mpsc::Sender<StreamCmd>> {
         self.open.store(false, Ordering::Relaxed);
-        self.tx.lock().unwrap().take()
+        self.tx.lock_or_recover().take()
     }
 
     /// Drop the channel and mark closed without sending a final command (used
     /// when the worker exits without a finalize/cancel handshake).
     fn clear(&self) {
         self.open.store(false, Ordering::Relaxed);
-        *self.tx.lock().unwrap() = None;
+        *self.tx.lock_or_recover() = None;
     }
 
     /// Forward a 16 kHz frame to the active streaming worker. Cheap no-op (a
@@ -166,7 +167,7 @@ impl StreamRouter {
         if !self.open.load(Ordering::Relaxed) {
             return;
         }
-        if let Some(tx) = self.tx.lock().unwrap().as_ref() {
+        if let Some(tx) = self.tx.lock_or_recover().as_ref() {
             let _ = tx.send(StreamCmd::Feed(frame.to_vec()));
         }
     }
@@ -368,7 +369,7 @@ impl TranscriptionManager {
                 }
                 debug!("Idle watcher thread shutting down gracefully");
             });
-            *manager.watcher_handle.lock().unwrap() = Some(handle);
+            *manager.watcher_handle.lock_or_recover() = Some(handle);
         }
 
         Ok(manager)
@@ -400,7 +401,7 @@ impl TranscriptionManager {
     /// clear the flag and wake waiters. Returns `None` if a load is already in
     /// progress.
     pub fn try_start_loading(&self) -> Option<LoadingGuard> {
-        let mut is_loading = self.is_loading.lock().unwrap();
+        let mut is_loading = self.is_loading.lock_or_recover();
         if *is_loading {
             return None;
         }
@@ -421,7 +422,7 @@ impl TranscriptionManager {
             *engine = None;
         }
         {
-            let mut current_model = self.current_model_id.lock().unwrap();
+            let mut current_model = self.current_model_id.lock_or_recover();
             *current_model = None;
         }
 
@@ -550,7 +551,7 @@ impl TranscriptionManager {
             *engine = None;
         }
         {
-            let mut current_model = self.current_model_id.lock().unwrap();
+            let mut current_model = self.current_model_id.lock_or_recover();
             *current_model = None;
         }
 
@@ -714,7 +715,7 @@ impl TranscriptionManager {
             *engine = Some(loaded_engine);
         }
         {
-            let mut current_model = self.current_model_id.lock().unwrap();
+            let mut current_model = self.current_model_id.lock_or_recover();
             *current_model = Some(model_id.to_string());
         }
 
@@ -743,7 +744,7 @@ impl TranscriptionManager {
 
     /// Kicks off the model loading in a background thread if it's not already loaded
     pub fn initiate_model_load(&self) {
-        let mut is_loading = self.is_loading.lock().unwrap();
+        let mut is_loading = self.is_loading.lock_or_recover();
         if *is_loading {
             return;
         }
@@ -765,14 +766,14 @@ impl TranscriptionManager {
             if let Err(e) = self_clone.load_model(&settings.selected_model) {
                 error!("Failed to load model: {}", e);
             }
-            let mut is_loading = self_clone.is_loading.lock().unwrap();
+            let mut is_loading = self_clone.is_loading.lock_or_recover();
             *is_loading = false;
             self_clone.loading_condvar.notify_all();
         });
     }
 
     pub fn get_current_model(&self) -> Option<String> {
-        let current_model = self.current_model_id.lock().unwrap();
+        let current_model = self.current_model_id.lock_or_recover();
         current_model.clone()
     }
 
@@ -844,7 +845,7 @@ impl TranscriptionManager {
         // Wait for any in-progress model load to finish (start_stream races the
         // background load kicked off when recording starts).
         {
-            let mut is_loading = self.is_loading.lock().unwrap();
+            let mut is_loading = self.is_loading.lock_or_recover();
             while *is_loading {
                 is_loading = self.loading_condvar.wait(is_loading).unwrap();
             }
@@ -1101,7 +1102,7 @@ impl TranscriptionManager {
     /// unloaded during transcription (in which case the stale engine is dropped).
     fn return_engine(&self, engine: LoadedEngine, expected_model_id: &str) {
         let still_current =
-            self.current_model_id.lock().unwrap().as_deref() == Some(expected_model_id);
+            self.current_model_id.lock_or_recover().as_deref() == Some(expected_model_id);
         if still_current {
             *self.lock_engine() = Some(engine);
         } else {
@@ -1205,7 +1206,7 @@ impl TranscriptionManager {
         // Check if model is loaded, if not try to load it
         {
             // If the model is loading, wait for it to complete.
-            let mut is_loading = self.is_loading.lock().unwrap();
+            let mut is_loading = self.is_loading.lock_or_recover();
             while *is_loading {
                 is_loading = self.loading_condvar.wait(is_loading).unwrap();
             }

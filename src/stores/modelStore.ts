@@ -2,8 +2,14 @@ import { create } from "zustand";
 import { subscribeWithSelector } from "zustand/middleware";
 import { produce } from "immer";
 import { listen } from "@tauri-apps/api/event";
-import { commands, type ModelInfo } from "@/bindings";
+import {
+  commands,
+  type HfRepoListing,
+  type ModelInfo,
+  type NewCustomModel,
+} from "@/bindings";
 import { toast } from "sonner";
+import { useSettingsStore } from "./settingsStore";
 
 interface DownloadProgress {
   model_id: string;
@@ -42,6 +48,14 @@ interface ModelsStore {
   downloadModel: (modelId: string) => Promise<boolean>;
   cancelDownload: (modelId: string) => Promise<boolean>;
   deleteModel: (modelId: string) => Promise<boolean>;
+  listHfRepoFiles: (repoId: string) => Promise<HfRepoListing>;
+  addCustomModel: (model: NewCustomModel) => Promise<string>;
+  updateCustomModel: (
+    modelId: string,
+    name: string,
+    languageHint: string | null,
+  ) => Promise<void>;
+  removeCustomModel: (modelId: string, deleteFile: boolean) => Promise<void>;
   getModelInfo: (modelId: string) => ModelInfo | undefined;
   isModelDownloading: (modelId: string) => boolean;
   isModelVerifying: (modelId: string) => boolean;
@@ -148,6 +162,8 @@ export const useModelStore = create<ModelsStore>()(
         const result = await commands.setActiveModel(modelId);
         if (result.status === "ok") {
           set({ currentModel: modelId });
+          // The backend may have applied a custom model's language hint.
+          await useSettingsStore.getState().refreshSettings();
           return true;
         } else {
           set({ error: `Failed to switch to model: ${result.error}` });
@@ -243,6 +259,45 @@ export const useModelStore = create<ModelsStore>()(
         set({ error: `Failed to delete model: ${err}` });
         return false;
       }
+    },
+
+    // The custom-model actions throw the backend's error message so the dialog
+    // can show it inline.
+    listHfRepoFiles: async (repoId: string) => {
+      const result = await commands.listHfRepoModelFiles(repoId);
+      if (result.status !== "ok") throw new Error(result.error);
+      return result.data;
+    },
+
+    addCustomModel: async (model: NewCustomModel) => {
+      const result = await commands.addCustomModel(model);
+      if (result.status !== "ok") throw new Error(result.error);
+      await useSettingsStore.getState().refreshSettings();
+      await get().loadModels();
+      return result.data.id;
+    },
+
+    updateCustomModel: async (
+      modelId: string,
+      name: string,
+      languageHint: string | null,
+    ) => {
+      const result = await commands.updateCustomModel(
+        modelId,
+        name,
+        languageHint,
+      );
+      if (result.status !== "ok") throw new Error(result.error);
+      await useSettingsStore.getState().refreshSettings();
+      await get().loadModels();
+    },
+
+    removeCustomModel: async (modelId: string, deleteFile: boolean) => {
+      const result = await commands.removeCustomModel(modelId, deleteFile);
+      if (result.status !== "ok") throw new Error(result.error);
+      await useSettingsStore.getState().refreshSettings();
+      await get().loadModels();
+      await get().loadCurrentModel();
     },
 
     getModelInfo: (modelId: string) => {

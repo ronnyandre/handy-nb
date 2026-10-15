@@ -86,7 +86,7 @@ public func processTextWithSystemPrompt(
     }
     let box = ResultBox()
 
-    Task.detached(priority: .userInitiated) {
+    let task = Task.detached(priority: .userInitiated) {
         defer { semaphore.signal() }
         do {
             let session = LanguageModelSession(
@@ -115,7 +115,15 @@ public func processTextWithSystemPrompt(
         }
     }
 
-    semaphore.wait()
+    // Bounded wait so a stuck model cannot hang post-processing forever. On
+    // timeout the box is not read: the task may still finish and write to it.
+    if semaphore.wait(timeout: .now() + .seconds(requestTimeoutSeconds)) == .timedOut {
+        task.cancel()
+        responsePtr.pointee.error_message = duplicateCString(
+            "Apple Intelligence timed out after \(requestTimeoutSeconds) seconds."
+        )
+        return responsePtr
+    }
 
     // Write to responsePtr on the calling thread after task completes
     if let response = box.response {
@@ -127,6 +135,9 @@ public func processTextWithSystemPrompt(
 
     return responsePtr
 }
+
+/// Matches `llm_client::REQUEST_TIMEOUT` on the Rust side.
+private let requestTimeoutSeconds = 30
 
 @_cdecl("free_apple_llm_response")
 public func freeAppleLLMResponse(_ response: UnsafeMutablePointer<AppleLLMResponse>?) {

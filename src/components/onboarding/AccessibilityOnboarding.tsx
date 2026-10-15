@@ -396,9 +396,22 @@ const AccessibilityOnboarding: React.FC<AccessibilityOnboardingProps> = ({
                     {t("onboarding.permissions.granted")}
                   </div>
                 ) : permissions.accessibility === "waiting" ? (
-                  <div className="flex items-center gap-2 text-text/50 text-sm">
-                    <Loader2 className="w-4 h-4 animate-spin" />
-                    {t("onboarding.permissions.waiting")}
+                  <div className="flex flex-col gap-2">
+                    <div className="flex items-center gap-2 text-text/50 text-sm">
+                      <Loader2 className="w-4 h-4 animate-spin" />
+                      {t("onboarding.permissions.waiting")}
+                    </div>
+                    {/* If the app is missing from the Accessibility list (e.g.
+                        an old entry was removed), asking again re-adds it. */}
+                    <p className="text-xs text-text/50">
+                      {t("onboarding.permissions.accessibility.notListed")}
+                    </p>
+                    <button
+                      onClick={handleGrantAccessibility}
+                      className="self-start px-3 py-1.5 rounded-lg bg-mid-gray/10 hover:bg-mid-gray/20 text-text/80 text-xs font-medium transition-colors"
+                    >
+                      {t("onboarding.permissions.tryAgain")}
+                    </button>
                   </div>
                 ) : (
                   <button

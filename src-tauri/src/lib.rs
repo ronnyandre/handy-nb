@@ -108,9 +108,12 @@ fn show_main_window(app: &AppHandle) {
         }
         #[cfg(target_os = "macos")]
         {
-            if let Err(e) = app.set_activation_policy(tauri::ActivationPolicy::Regular) {
-                log::error!("Failed to set activation policy to Regular: {}", e);
+            if dock_icon_visible(app) {
+                if let Err(e) = app.set_activation_policy(tauri::ActivationPolicy::Regular) {
+                    log::error!("Failed to set activation policy to Regular: {}", e);
+                }
             }
+            bring_window_to_front(&main_window);
         }
         return;
     }
@@ -120,6 +123,62 @@ fn show_main_window(app: &AppHandle) {
         "Main window not found. Webview labels: {:?}",
         webview_labels
     );
+}
+
+/// Console log output that drops lines it cannot write.
+///
+/// The plugin's stdout/stderr targets make `fern` panic when both the write
+/// and its stderr fallback fail (closed pipe, e.g. `handy --list-models |
+/// head`, or a closed terminal). Inside the transcribe-cpp log callback that
+/// panic cannot unwind through C and aborts the whole app.
+fn console_log_target(to_stderr: bool) -> TargetKind {
+    TargetKind::Dispatch(
+        fern::Dispatch::new().chain(fern::Output::call(move |record| {
+            use std::io::Write;
+            let _ = if to_stderr {
+                writeln!(std::io::stderr(), "{}", record.args())
+            } else {
+                writeln!(std::io::stdout(), "{}", record.args())
+            };
+        })),
+    )
+}
+
+/// Activate the app and raise `window` above other apps' windows.
+///
+/// `set_focus` is not enough when the app has no Dock icon (Accessory
+/// policy): macOS then shows the window behind the frontmost app, so opening
+/// Settings from the menu bar appeared to do nothing.
+#[cfg(target_os = "macos")]
+fn bring_window_to_front(window: &tauri::WebviewWindow) {
+    let target = window.clone();
+    let result = window.run_on_main_thread(move || {
+        use objc2::MainThreadMarker;
+        use objc2_app_kit::{NSApplication, NSWindow};
+
+        let Some(mtm) = MainThreadMarker::new() else {
+            return;
+        };
+        let ns_app = NSApplication::sharedApplication(mtm);
+        // `activate()` (macOS 14+) is cooperative and is refused for an
+        // Accessory app while another app is active, so also use the
+        // deprecated forcing variant, which macOS still honours.
+        #[allow(deprecated)]
+        ns_app.activateIgnoringOtherApps(true);
+        if objc2::available!(macos = 14.0) {
+            ns_app.activate();
+        }
+        if let Ok(ptr) = target.ns_window() {
+            // SAFETY: Tauri returns the window's live NSWindow pointer, and
+            // this closure runs on the main thread that owns it.
+            let ns_window: &NSWindow = unsafe { &*(ptr as *const NSWindow) };
+            ns_window.makeKeyAndOrderFront(None);
+            ns_window.orderFrontRegardless();
+        }
+    });
+    if let Err(e) = result {
+        log::error!("Failed to bring window to front: {}", e);
+    }
 }
 
 /// Choose the macOS activation policy the process *launches* with.
@@ -146,15 +205,53 @@ fn apply_startup_activation_policy(app: &mut tauri::App, headless_mode: bool) {
         return;
     }
 
-    let cli_args = app.state::<CliArgs>().inner().clone();
-    let settings = settings::get_settings(app.handle());
-
-    let should_hide = settings.start_hidden || cli_args.start_hidden;
-    let tray_available = settings.show_tray_icon && !cli_args.no_tray;
-
-    if should_hide && tray_available {
-        log::info!("Starting hidden with tray available: launching as Accessory (no Dock icon)");
+    if !dock_icon_visible(app.handle()) {
+        log::info!("Dock icon hidden by setting: launching as Accessory");
         app.set_activation_policy(tauri::ActivationPolicy::Accessory);
+    }
+}
+
+/// Whether the app should have a Dock icon: the `show_in_dock` setting, but
+/// always shown when no tray icon is available so the app stays reachable.
+#[cfg(target_os = "macos")]
+pub(crate) fn dock_icon_visible(app: &AppHandle) -> bool {
+    let settings = settings::get_settings(app);
+    let tray_available = settings.show_tray_icon && !app.state::<CliArgs>().no_tray;
+    settings.show_in_dock || !tray_available
+}
+
+/// Apply the Dock icon visibility at runtime, keeping the settings window in
+/// front when it is open.
+#[cfg(target_os = "macos")]
+pub(crate) fn apply_dock_visibility(app: &AppHandle) {
+    let policy = if dock_icon_visible(app) {
+        tauri::ActivationPolicy::Regular
+    } else {
+        tauri::ActivationPolicy::Accessory
+    };
+    if let Err(e) = app.set_activation_policy(policy) {
+        log::error!("Failed to set activation policy: {}", e);
+    }
+    if let Some(window) = app.get_webview_window("main") {
+        if window.is_visible().unwrap_or(false) {
+            let _ = window.set_focus();
+        }
+    }
+}
+
+/// Tell the user once if an unreadable settings file was set aside at startup.
+fn notify_if_settings_were_reset(app: &AppHandle) {
+    use tauri_plugin_dialog::{DialogExt, MessageDialogKind};
+    if let Some(backup) = settings::quarantined_settings_backup() {
+        app.dialog()
+            .message(format!(
+                "Your settings file could not be read, so {} started with default settings.\n\nThe old file was kept at:\n{}",
+                app.package_info().name,
+                backup.display()
+            ))
+            .title("Settings Reset")
+            .kind(MessageDialogKind::Warning)
+            .show(|_| {});
     }
 }
 
@@ -407,7 +504,14 @@ where
             } else {
                 "unknown panic".to_string()
             };
-            eprintln!("error: headless transcription panicked: {message}");
+            // Not eprintln!: if stderr is closed (e.g. piped into `head`) that
+            // would panic outside the guard, and the worker would die without
+            // exiting the process, leaving the event loop running forever.
+            use std::io::Write;
+            let _ = writeln!(
+                std::io::stderr(),
+                "error: headless transcription panicked: {message}"
+            );
             1
         }
     }
@@ -704,6 +808,7 @@ pub fn run(cli_args: CliArgs) {
             shortcut::change_keyboard_implementation_setting,
             shortcut::get_keyboard_implementation,
             shortcut::change_show_tray_icon_setting,
+            shortcut::change_show_in_dock_setting,
             shortcut::change_transcribe_accelerator_setting,
             shortcut::change_ort_accelerator_setting,
             shortcut::change_transcribe_gpu_device,
@@ -738,6 +843,10 @@ pub fn run(cli_args: CliArgs) {
             commands::models::get_transcription_model_status,
             commands::models::is_model_loading,
             commands::models::rescan_local_models,
+            commands::models::list_hf_repo_model_files,
+            commands::models::add_custom_model,
+            commands::models::update_custom_model,
+            commands::models::remove_custom_model,
             commands::audio::update_microphone_mode,
             commands::audio::get_microphone_mode,
             commands::audio::get_windows_microphone_permission_status,
@@ -803,12 +912,7 @@ pub fn run(cli_args: CliArgs) {
                     // headless mode (--transcribe-file/--list-devices/--list-models)
                     // stdout carries only the result (JSON or plain), so send console
                     // logs to stderr instead to keep stdout clean for CI parsing.
-                    Target::new(if headless_mode {
-                        TargetKind::Stderr
-                    } else {
-                        TargetKind::Stdout
-                    })
-                    .filter({
+                    Target::new(console_log_target(headless_mode)).filter({
                         let console_filter = console_filter.clone();
                         move |metadata| console_filter.enabled(metadata)
                     }),
@@ -945,7 +1049,7 @@ pub fn run(cli_args: CliArgs) {
             // for portable mode (redirects WebView2 cache to portable Data dir)
             let mut win_builder =
                 tauri::WebviewWindowBuilder::new(app, "main", tauri::WebviewUrl::App("/".into()))
-                    .title("Handy")
+                    .title("Handy NB")
                     .inner_size(680.0, 570.0)
                     .min_inner_size(680.0, 570.0)
                     .resizable(true)
@@ -1056,6 +1160,8 @@ pub fn run(cli_args: CliArgs) {
                 show_main_window(&app_handle);
             }
 
+            notify_if_settings_were_reset(&app_handle);
+
             Ok(())
         })
         .on_window_event(|window, event| match event {
@@ -1063,22 +1169,8 @@ pub fn run(cli_args: CliArgs) {
                 api.prevent_close();
                 let _res = window.hide();
 
-                #[cfg(target_os = "macos")]
-                {
-                    let settings = get_settings(window.app_handle());
-                    let tray_visible =
-                        settings.show_tray_icon && !window.app_handle().state::<CliArgs>().no_tray;
-                    if tray_visible {
-                        // Tray is available: hide the dock icon, app lives in the tray
-                        let res = window
-                            .app_handle()
-                            .set_activation_policy(tauri::ActivationPolicy::Accessory);
-                        if let Err(e) = res {
-                            log::error!("Failed to set activation policy: {}", e);
-                        }
-                    }
-                    // No tray: keep the dock icon visible so the user can reopen
-                }
+                // The Dock icon follows the show_in_dock setting and does
+                // not change when the window closes.
             }
             tauri::WindowEvent::ThemeChanged(theme) => {
                 log::info!("Theme changed to: {:?}", theme);

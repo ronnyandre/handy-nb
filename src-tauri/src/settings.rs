@@ -1,12 +1,13 @@
-use crate::utils;
-use log::{debug, warn};
+use log::{debug, error, warn};
 use serde::de::{self, Visitor};
 use serde::{Deserialize, Deserializer, Serialize};
 use specta::Type;
 use std::collections::HashMap;
 use std::fmt;
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, Once, OnceLock};
 use tauri::AppHandle;
-use tauri_plugin_store::StoreExt;
+use tauri_plugin_store::{Store, StoreExt};
 
 pub const APPLE_INTELLIGENCE_PROVIDER_ID: &str = "apple_intelligence";
 pub const APPLE_INTELLIGENCE_DEFAULT_MODEL_ID: &str = "Apple Intelligence";
@@ -530,6 +531,53 @@ pub struct AppSettings {
     /// `overlay_position` (position `none` → style `None`).
     #[serde(default = "default_overlay_style")]
     pub overlay_style: OverlayStyle,
+    /// User-defined transcription models (a Hugging Face file or a direct URL).
+    #[serde(default)]
+    pub custom_models: Vec<CustomModelDef>,
+    /// Whether `selected_language` was last set by a custom model's language
+    /// hint rather than by the user. Only hint-set languages are replaced when
+    /// another model's hint applies.
+    #[serde(default)]
+    pub language_from_hint: bool,
+    /// macOS: show the Dock icon at all times (true) or never (false). The
+    /// Dock icon is still shown when the tray icon is unavailable, so the app
+    /// stays reachable.
+    #[serde(default = "default_show_in_dock")]
+    pub show_in_dock: bool,
+}
+
+fn default_show_in_dock() -> bool {
+    true
+}
+
+/// Where a user-defined model is downloaded from.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, Type)]
+#[serde(tag = "type")]
+pub enum CustomModelSource {
+    /// A file in a public Hugging Face repo, pinned to a commit.
+    HuggingFace {
+        repo_id: String,
+        revision: String,
+        filename: String,
+    },
+    /// A direct HTTPS download, stored in the models dir as `filename`.
+    Url {
+        url: String,
+        sha256: Option<String>,
+        filename: String,
+    },
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, Type)]
+pub struct CustomModelDef {
+    pub id: String,
+    pub name: String,
+    pub source: CustomModelSource,
+    /// Language selected automatically when this model is chosen.
+    #[serde(default)]
+    pub language_hint: Option<String>,
+    #[serde(default)]
+    pub size_bytes: Option<u64>,
 }
 
 fn default_model() -> String {
@@ -881,7 +929,7 @@ pub fn get_default_settings() -> AppSettings {
     #[cfg(target_os = "windows")]
     let default_shortcut = "ctrl+space";
     #[cfg(target_os = "macos")]
-    let default_shortcut = "option+space";
+    let default_shortcut = "ctrl+option+space";
     #[cfg(target_os = "linux")]
     let default_shortcut = "ctrl+space";
     #[cfg(not(any(target_os = "windows", target_os = "macos", target_os = "linux")))]
@@ -901,7 +949,7 @@ pub fn get_default_settings() -> AppSettings {
     #[cfg(target_os = "windows")]
     let default_post_process_shortcut = "ctrl+shift+space";
     #[cfg(target_os = "macos")]
-    let default_post_process_shortcut = "option+shift+space";
+    let default_post_process_shortcut = "ctrl+option+shift+space";
     #[cfg(target_os = "linux")]
     let default_post_process_shortcut = "ctrl+shift+space";
     #[cfg(not(any(target_os = "windows", target_os = "macos", target_os = "linux")))]
@@ -993,6 +1041,9 @@ pub fn get_default_settings() -> AppSettings {
         vad_enabled: default_vad_enabled(),
         vad_backend: VadBackend::default(),
         overlay_style: default_overlay_style(),
+        custom_models: Vec::new(),
+        language_from_hint: false,
+        show_in_dock: default_show_in_dock(),
     }
 }
 
@@ -1034,10 +1085,78 @@ pub fn load_or_create_app_settings(app: &AppHandle) -> AppSettings {
     settings
 }
 
+/// Backup made when the settings file could not be read at startup; shown to
+/// the user once the app is up.
+static QUARANTINED_SETTINGS: OnceLock<PathBuf> = OnceLock::new();
+
+/// Path of a settings file that was set aside because it could not be read.
+pub fn quarantined_settings_backup() -> Option<&'static PathBuf> {
+    QUARANTINED_SETTINGS.get()
+}
+
+/// Move an unreadable settings file out of the way before the store opens it.
+/// The store plugin ignores read errors and would otherwise start empty and
+/// overwrite the damaged file with defaults on the next save, losing it.
+/// Returns the backup path when the file was moved.
+fn quarantine_unreadable_settings_file(path: &Path) -> Option<PathBuf> {
+    let bytes = std::fs::read(path).ok()?;
+    let readable = serde_json::from_slice::<serde_json::Value>(&bytes)
+        .map(|value| value.is_object())
+        .unwrap_or(false);
+    if readable {
+        return None;
+    }
+    let stamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let file_name = path.file_name()?.to_string_lossy();
+    let backup = path.with_file_name(format!("{file_name}.corrupt-{stamp}"));
+    match std::fs::rename(path, &backup) {
+        Ok(()) => {
+            warn!("Settings file could not be read; moved it to {backup:?} and starting with defaults");
+            Some(backup)
+        }
+        Err(e) => {
+            error!("Settings file could not be read and could not be moved aside: {e}");
+            None
+        }
+    }
+}
+
+/// Open the settings store. Returns `None` (logged) if it cannot be opened,
+/// e.g. when the app data directory cannot be resolved.
+fn settings_store(app: &AppHandle) -> Option<Arc<Store<tauri::Wry>>> {
+    static CHECKED: Once = Once::new();
+    CHECKED.call_once(|| {
+        let Ok(dir) = crate::portable::app_data_dir(app) else {
+            return;
+        };
+        if let Some(backup) = quarantine_unreadable_settings_file(&dir.join(SETTINGS_STORE_PATH)) {
+            let _ = QUARANTINED_SETTINGS.set(backup);
+        }
+    });
+
+    match app.store(crate::portable::store_path(SETTINGS_STORE_PATH)) {
+        Ok(store) => Some(store),
+        Err(e) => {
+            error!("Failed to open settings store: {e}");
+            None
+        }
+    }
+}
+
+fn persist_settings(store: &Store<tauri::Wry>, settings: &AppSettings) {
+    match serde_json::to_value(settings) {
+        Ok(value) => store.set("settings", value),
+        Err(e) => error!("Failed to serialize settings: {e}"),
+    }
+}
+
 pub fn get_settings(app: &AppHandle) -> AppSettings {
-    let store = app
-        .store(crate::portable::store_path(SETTINGS_STORE_PATH))
-        .expect("Failed to initialize store");
+    let Some(store) = settings_store(app) else {
+        return get_default_settings();
+    };
 
     // Settings reads also persist one-time migrations. Migration helpers are
     // idempotent, so this converges after the first read of an older store.
@@ -1065,18 +1184,18 @@ pub fn get_settings(app: &AppHandle) -> AppSettings {
         }
 
         if updated {
-            store.set("settings", serde_json::to_value(&settings).unwrap());
+            persist_settings(&store, &settings);
         }
 
         settings
     } else {
         let default_settings = get_default_settings();
-        store.set("settings", serde_json::to_value(&default_settings).unwrap());
+        persist_settings(&store, &default_settings);
         default_settings
     };
 
     if ensure_post_process_defaults(&mut settings) {
-        store.set("settings", serde_json::to_value(&settings).unwrap());
+        persist_settings(&store, &settings);
     }
 
     settings
@@ -1231,10 +1350,11 @@ fn apply_settings_migrations(
 /// Update checks are forced off (without touching the persisted setting) when
 /// `HANDY_DISABLE_UPDATER` is set — e.g. by the Nix package, since self-update
 /// can't work against an immutable /nix/store install.
+///
+/// This fork always disables them: the updater points at upstream releases and
+/// would replace this build with stock Handy.
 pub fn update_checks_forced_disabled() -> bool {
-    use std::sync::OnceLock;
-    static IS_UPDATER_DISABLED: OnceLock<bool> = OnceLock::new();
-    *IS_UPDATER_DISABLED.get_or_init(|| utils::env_flag_enabled("HANDY_DISABLE_UPDATER"))
+    true
 }
 
 /// Effective updater state: the user's stored preference, overridden to `false`
@@ -1246,11 +1366,9 @@ pub fn update_checks_effectively_enabled(settings: &AppSettings) -> bool {
 }
 
 pub fn write_settings(app: &AppHandle, settings: AppSettings) {
-    let store = app
-        .store(crate::portable::store_path(SETTINGS_STORE_PATH))
-        .expect("Failed to initialize store");
-
-    store.set("settings", serde_json::to_value(&settings).unwrap());
+    if let Some(store) = settings_store(app) {
+        persist_settings(&store, &settings);
+    }
 }
 
 pub fn get_bindings(app: &AppHandle) -> HashMap<String, ShortcutBinding> {
@@ -1275,6 +1393,44 @@ pub fn get_history_limit(app: &AppHandle) -> usize {
 pub fn get_recording_retention_period(app: &AppHandle) -> RecordingRetentionPeriod {
     let settings = get_settings(app);
     settings.recording_retention_period
+}
+
+#[cfg(test)]
+mod quarantine_tests {
+    use super::quarantine_unreadable_settings_file;
+
+    #[test]
+    fn readable_file_is_left_alone() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("settings_store.json");
+        std::fs::write(&path, r#"{"settings":{}}"#).unwrap();
+        assert_eq!(quarantine_unreadable_settings_file(&path), None);
+        assert!(path.exists());
+    }
+
+    #[test]
+    fn missing_file_is_ignored() {
+        let dir = tempfile::tempdir().unwrap();
+        assert_eq!(
+            quarantine_unreadable_settings_file(&dir.path().join("settings_store.json")),
+            None
+        );
+    }
+
+    #[test]
+    fn damaged_file_is_moved_aside() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("settings_store.json");
+        std::fs::write(&path, b"{\"settings\": {trunc").unwrap();
+        let backup = quarantine_unreadable_settings_file(&path).unwrap();
+        assert!(!path.exists());
+        assert_eq!(std::fs::read(&backup).unwrap(), b"{\"settings\": {trunc");
+        assert!(backup
+            .file_name()
+            .unwrap()
+            .to_string_lossy()
+            .starts_with("settings_store.json.corrupt-"));
+    }
 }
 
 #[cfg(test)]

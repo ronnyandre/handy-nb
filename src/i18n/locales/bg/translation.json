@@ -108,11 +108,13 @@
       },
       "accessibility": {
         "title": "Достъп за достъпност",
-        "description": "Необходим е, за да въвежда транскрибирания текст във вашите приложения."
+        "description": "Необходим е, за да въвежда транскрибирания текст във вашите приложения.",
+        "notListed": "Not in the list, or the switch has no effect? Remove the old entry, then try again."
       },
       "grant": "Даване на разрешение",
       "granted": "Разрешено",
       "waiting": "Изчакване...",
+      "tryAgain": "Try Again",
       "allGranted": "Готово!",
       "errors": {
         "checkFailed": "Проверката на разрешенията не бе успешна. Опитайте отново.",
@@ -227,6 +229,40 @@
       "rescan": {
         "label": "Сканиране отново",
         "tooltip": "Сканиране отново за модели, добавени в папката с модели или кеша на Hugging Face извън Handy"
+      },
+      "custom": {
+        "addButton": "Add",
+        "addTooltip": "Add a custom model from Hugging Face or a URL",
+        "addTitle": "Add Custom Model",
+        "addDescription": "Use any whisper.cpp GGML (.bin) or GGUF model that Handy's engine can run.",
+        "editTitle": "Edit Custom Model",
+        "tabs": {
+          "huggingFace": "Hugging Face",
+          "url": "Direct URL"
+        },
+        "repoLabel": "Repository",
+        "fileLabel": "Model file",
+        "urlLabel": "Download URL (https)",
+        "sha256Label": "SHA-256 (optional)",
+        "nameLabel": "Name",
+        "languageLabel": "Language",
+        "languageNone": "No preference",
+        "languageHelp": "Selected automatically when you switch to this model, unless you've chosen a language yourself.",
+        "languageBadge": "Language: {{language}}",
+        "largeFileWarning": "This file is larger than 2 GB. It will take a while to download and needs plenty of memory.",
+        "add": "Add Model",
+        "save": "Save",
+        "cancel": "Cancel",
+        "edit": "Edit",
+        "remove": "Remove",
+        "removeTitle": "Remove Custom Model",
+        "removeConfirm": "Remove {{modelName}} from your models?",
+        "removeDeleteFile": "Also delete the downloaded model file?",
+        "deleteFile": "Delete File",
+        "keepFile": "Keep File",
+        "errors": {
+          "noFiles": "No .gguf or .bin model files were found in this repository."
+        }
       }
     },
     "sound": {
@@ -298,6 +334,11 @@
       "showTrayIcon": {
         "label": "Икона в системната област",
         "description": "Показване на иконата на Handy в системната област."
+      },
+      "showInDock": {
+        "label": "Show in Dock",
+        "description": "Show the Handy NB icon in the Dock. When off, open the app from the menu bar icon.",
+        "requiresTray": "The Dock icon is always shown while the menu bar icon is hidden."
       },
       "overlay": {
         "style": {

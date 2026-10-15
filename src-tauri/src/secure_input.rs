@@ -122,6 +122,7 @@ pub fn tray_warning_active(app: &AppHandle) -> bool {
 mod imp {
     use super::*;
     use crate::settings::{self, KeyboardImplementation, ShortcutBinding};
+    use crate::utils::LockExt;
     use log::{debug, error, info, warn};
     use std::process::Command;
     use std::sync::atomic::{AtomicBool, Ordering};
@@ -206,7 +207,7 @@ mod imp {
             if !self.is_sustained() {
                 return false;
             }
-            let fallback = self.fallback.lock().unwrap();
+            let fallback = self.fallback.lock_or_recover();
             !fallback.degraded.is_empty() || !fallback.uncovered.is_empty()
         }
     }
@@ -254,8 +255,8 @@ mod imp {
         // Culprit discovery shells out to ioreg and is intentionally performed
         // only by the monitor (or the blocking diagnostic), never by this
         // synchronous Tauri command.
-        let culprit = state.culprit.lock().unwrap().clone();
-        let fallback = state.fallback.lock().unwrap();
+        let culprit = state.culprit.lock_or_recover().clone();
+        let fallback = state.fallback.lock_or_recover();
         SecureInputStatus {
             enabled,
             sustained: state.sustained.load(Ordering::SeqCst),
@@ -314,8 +315,8 @@ mod imp {
                         }
                         None => info!("SecureInput ENABLED (no visible holder)"),
                     }
-                    *state.enabled_since.lock().unwrap() = Some(Instant::now());
-                    *state.culprit.lock().unwrap() = culprit;
+                    *state.enabled_since.lock_or_recover() = Some(Instant::now());
+                    *state.culprit.lock_or_recover() = culprit;
                 }
 
                 if !now_enabled {
@@ -325,8 +326,8 @@ mod imp {
                     let was_blocked = state.recorder_blocked.swap(false, Ordering::SeqCst);
                     if was_enabled {
                         info!("SecureInput DISABLED");
-                        *state.enabled_since.lock().unwrap() = None;
-                        *state.culprit.lock().unwrap() = None;
+                        *state.enabled_since.lock_or_recover() = None;
+                        *state.culprit.lock_or_recover() = None;
                     }
 
                     if state.sustained.swap(false, Ordering::SeqCst) {
@@ -458,10 +459,10 @@ mod imp {
     /// Replacing a held push-to-talk registration loses its release. See #1999.
     pub fn reconcile_fallback(app: &AppHandle) {
         let state = app.state::<SecureInputState>();
-        let _operation = state.fallback_operation.lock().unwrap();
+        let _operation = state.fallback_operation.lock_or_recover();
 
         let previous = {
-            let mut fallback = state.fallback.lock().unwrap();
+            let mut fallback = state.fallback.lock_or_recover();
             std::mem::take(&mut *fallback)
         };
 
@@ -579,7 +580,7 @@ mod imp {
             debug!("SecureInput fallback deferred until shortcuts are initialized");
         }
 
-        *state.fallback.lock().unwrap() = next;
+        *state.fallback.lock_or_recover() = next;
         drop(_operation);
 
         // The tray sync diffs against what is displayed, so this is free when

@@ -6,6 +6,7 @@ use serde_json::Value;
 use std::collections::HashSet;
 use std::error::Error as StdError;
 use std::sync::{Mutex, OnceLock};
+use std::time::Duration;
 
 #[derive(Debug, Serialize)]
 struct ChatMessage {
@@ -172,11 +173,29 @@ fn build_headers(provider: &PostProcessProvider, api_key: &str) -> Result<Header
     Ok(headers)
 }
 
+/// Time allowed to establish a connection to the provider.
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+/// Total time allowed per request. Post-processing may try a structured and
+/// then a plain request, so the worst case before falling back to the raw
+/// transcript is twice this.
+pub const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
+
 /// Create an HTTP client with provider-specific headers
 fn create_client(provider: &PostProcessProvider, api_key: &str) -> Result<reqwest::Client, String> {
+    create_client_with_timeouts(provider, api_key, CONNECT_TIMEOUT, REQUEST_TIMEOUT)
+}
+
+fn create_client_with_timeouts(
+    provider: &PostProcessProvider,
+    api_key: &str,
+    connect_timeout: Duration,
+    request_timeout: Duration,
+) -> Result<reqwest::Client, String> {
     let headers = build_headers(provider, api_key)?;
     reqwest::Client::builder()
         .default_headers(headers)
+        .connect_timeout(connect_timeout)
+        .timeout(request_timeout)
         .build()
         .map_err(|e| report_reqwest_error("Failed to build HTTP client", &e))
 }
@@ -627,6 +646,32 @@ mod tests {
             sanitized_url_for_log("not a URL containing secret"),
             "<invalid URL>"
         );
+    }
+
+    #[tokio::test]
+    async fn hung_provider_times_out() {
+        // Accepts the connection but never answers.
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            let (_stream, _) = listener.accept().await.unwrap();
+            tokio::time::sleep(Duration::from_secs(30)).await;
+        });
+
+        let base_url = format!("http://{address}");
+        let client = create_client_with_timeouts(
+            &provider("custom", &base_url),
+            "key",
+            Duration::from_secs(1),
+            Duration::from_millis(300),
+        )
+        .unwrap();
+
+        let started = std::time::Instant::now();
+        let error = client.get(&base_url).send().await.unwrap_err();
+        assert!(error.is_timeout());
+        assert!(started.elapsed() < Duration::from_secs(5));
+        assert!(report_reqwest_error("Request failed", &error).contains("timeout"));
     }
 
     #[tokio::test]

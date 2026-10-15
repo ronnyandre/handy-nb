@@ -1,3 +1,4 @@
+use crate::utils::LockExt;
 use std::{
     io::Error,
     sync::{
@@ -309,7 +310,7 @@ impl AudioRecorder {
                 // The device accepted this config; remember it so the next
                 // open skips the HAL property queries entirely.
                 if !config_was_cached && !device_name.is_empty() {
-                    *config_cache.lock().unwrap() = Some((device_name, config));
+                    *config_cache.lock_or_recover() = Some((device_name, config));
                 }
 
                 Ok((stream, sample_rate, sample_consumer))
@@ -341,7 +342,7 @@ impl AudioRecorder {
                     // A failed open may mean the cached config went stale
                     // (device re-plugged, rate/format changed in the OS).
                     // Drop it so the next attempt re-queries the device.
-                    *config_cache.lock().unwrap() = None;
+                    *config_cache.lock_or_recover() = None;
                     log::error!("{error_message}");
                     let _ = init_tx.send(Err(error_message));
                 }
@@ -650,7 +651,7 @@ fn handle_frame(
     }
 
     if let Some(cfg) = vad {
-        let mut detector = cfg.detector.lock().unwrap();
+        let mut detector = cfg.detector.lock_or_recover();
         match detector
             .push_frame(samples)
             .unwrap_or(VadFrame::Speech(samples))
@@ -783,7 +784,7 @@ impl CaptureProcessor {
         self.frame_resampler.reset();
         if policy != VadPolicy::Disabled {
             if let Some(cfg) = &self.vad {
-                let mut detector = cfg.detector.lock().unwrap();
+                let mut detector = cfg.detector.lock_or_recover();
                 detector.set_hangover_frames(cfg.hangover_for(policy));
                 detector.reset();
             }
@@ -885,7 +886,7 @@ impl CaptureProcessor {
         // not conclusive in either direction.
         if vad_policy != VadPolicy::Disabled {
             if let Some(cfg) = &self.vad {
-                let report = cfg.detector.lock().unwrap().tail_report();
+                let report = cfg.detector.lock_or_recover().tail_report();
                 if let Some(report) = report {
                     log::debug!(
                         "VAD at stop: withheld tail {} frames (~{}ms, {} voiced), in_speech={}, onset_counter={}, hangover_counter={}",

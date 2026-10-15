@@ -451,6 +451,14 @@ async changeShowTrayIconSetting(enabled: boolean) : Promise<Result<null, string>
     else return { status: "error", error: e  as any };
 }
 },
+async changeShowInDockSetting(enabled: boolean) : Promise<Result<null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("change_show_in_dock_setting", { enabled }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
 async changeTranscribeAcceleratorSetting(accelerator: TranscribeAcceleratorSetting) : Promise<Result<null, string>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("change_transcribe_accelerator_setting", { accelerator }) };
@@ -719,6 +727,38 @@ async isModelLoading() : Promise<Result<boolean, string>> {
 async rescanLocalModels() : Promise<Result<null, string>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("rescan_local_models") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async listHfRepoModelFiles(repoId: string) : Promise<Result<HfRepoListing, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("list_hf_repo_model_files", { repoId }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async addCustomModel(model: NewCustomModel) : Promise<Result<CustomModelDef, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("add_custom_model", { model }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async updateCustomModel(modelId: string, name: string, languageHint: string | null) : Promise<Result<CustomModelDef, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("update_custom_model", { modelId, name, languageHint }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async removeCustomModel(modelId: string, deleteFile: boolean) : Promise<Result<null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("remove_custom_model", { modelId, deleteFile }) };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
@@ -1017,7 +1057,23 @@ vad_backend?: VadBackend;
  * not gated on this — that follows model capability. Migrated from the old
  * `overlay_position` (position `none` → style `None`).
  */
-overlay_style?: OverlayStyle }
+overlay_style?: OverlayStyle; 
+/**
+ * User-defined transcription models (a Hugging Face file or a direct URL).
+ */
+custom_models?: CustomModelDef[]; 
+/**
+ * Whether `selected_language` was last set by a custom model's language
+ * hint rather than by the user. Only hint-set languages are replaced when
+ * another model's hint applies.
+ */
+language_from_hint?: boolean; 
+/**
+ * macOS: show the Dock icon at all times (true) or never (false). The
+ * Dock icon is still shown when the tray icon is unavailable, so the app
+ * stays reachable.
+ */
+show_in_dock?: boolean }
 export type AudioDevice = { index: string; name: string; is_default: boolean }
 export type AutoSubmitKey = "enter" | "ctrl_enter" | "cmd_enter"
 export type AvailableAccelerators = { transcribe: string[]; ort: string[]; gpu_devices: GpuDeviceOption[] }
@@ -1032,6 +1088,23 @@ export type ChineseScript =
  */
 "as_transcribed" | "simplified" | "traditional"
 export type ClipboardHandling = "dont_modify" | "copy_to_clipboard"
+export type CustomModelDef = { id: string; name: string; source: CustomModelSource; 
+/**
+ * Language selected automatically when this model is chosen.
+ */
+language_hint?: string | null; size_bytes?: number | null }
+/**
+ * Where a user-defined model is downloaded from.
+ */
+export type CustomModelSource = 
+/**
+ * A file in a public Hugging Face repo, pinned to a commit.
+ */
+{ type: "HuggingFace"; repo_id: string; revision: string; filename: string } | 
+/**
+ * A direct HTTPS download, stored in the models dir as `filename`.
+ */
+{ type: "Url"; url: string; sha256: string | null; filename: string }
 export type CustomSounds = { start: boolean; stop: boolean }
 export type EngineType = 
 /**
@@ -1041,6 +1114,12 @@ export type EngineType =
  */
 "TranscribeCpp" | "Parakeet" | "Moonshine" | "MoonshineStreaming" | "SenseVoice" | "GigaAM" | "Canary" | "Cohere"
 export type GpuDeviceOption = { id: string; name: string; total_vram_mb: number }
+export type HfRepoFile = { path: string; size_bytes: number | null }
+export type HfRepoListing = { repo_id: string; 
+/**
+ * Commit SHA the listing was taken from; used to pin the download.
+ */
+revision: string; files: HfRepoFile[] }
 export type HistoryEntry = { id: number; file_name: string; timestamp: number; saved: boolean; title: string; transcription_text: string; post_processed_text: string | null; post_process_prompt: string | null; post_process_requested: boolean }
 export type HistoryUpdatePayload = { action: "added"; entry: HistoryEntry } | { action: "updated"; entry: HistoryEntry } | { action: "deleted"; id: number } | { action: "toggled"; id: number }
 /**
@@ -1086,6 +1165,11 @@ sha256: string | null } } |
  */
 "Local"
 export type ModelUnloadTimeout = "never" | "immediately" | "min_2" | "min_5" | "min_10" | "min_15" | "hour_1" | "sec_15"
+/**
+ * Input from the "Add model" dialog. Ids and storage filenames are derived
+ * on the backend.
+ */
+export type NewCustomModel = { type: "HuggingFace"; name: string; repo_id: string; revision: string; filename: string; size_bytes: number | null; language_hint: string | null } | { type: "Url"; name: string; url: string; sha256: string | null; language_hint: string | null }
 export type OrtAcceleratorSetting = "auto" | "cpu" | "cuda" | "directml" | "rocm"
 export type OverlayPosition = "top" | "bottom"
 /**
