@@ -7,7 +7,10 @@ use crate::managers::history::HistoryManager;
 use crate::managers::model::ModelManager;
 use crate::managers::transcription::StreamWorkKind;
 use crate::managers::transcription::TranscriptionManager;
-use crate::settings::{get_settings, AppSettings, OverlayStyle, APPLE_INTELLIGENCE_PROVIDER_ID};
+use crate::settings::{
+    get_settings, AppSettings, OverlayStyle, APPLE_INTELLIGENCE_PROVIDER_ID,
+    TRANSCRIBE_SECONDARY_BINDING,
+};
 use crate::shortcut;
 use crate::tray::{set_tray_state, TrayIconState};
 use crate::utils::{
@@ -393,6 +396,28 @@ impl ShortcutAction for TranscribeAction {
         let tm = app.state::<Arc<TranscriptionManager>>();
         let rm = app.state::<Arc<AudioRecordingManager>>();
 
+        // The secondary shortcut records with its own model; every other
+        // transcribe shortcut goes back to the selected one.
+        if binding_id == TRANSCRIBE_SECONDARY_BINDING {
+            let secondary = get_settings(app).secondary_model;
+            if secondary.is_empty() {
+                warn!("Secondary shortcut pressed but no secondary model is set");
+                return;
+            }
+            // Refuse up front rather than letting the failed load fall back to
+            // whichever model is already loaded.
+            if let Err(e) = app.state::<Arc<ModelManager>>().get_model_path(&secondary) {
+                warn!(
+                    "Not starting recording: secondary model unavailable ({})",
+                    e
+                );
+                return;
+            }
+            tm.set_model_override(Some(secondary));
+        } else {
+            tm.set_model_override(None);
+        }
+
         // Load ASR model and VAD model in parallel
         let kickoff_started = Instant::now();
         tm.initiate_model_load();
@@ -404,13 +429,14 @@ impl ShortcutAction for TranscribeAction {
         });
         let kickoff_elapsed = kickoff_started.elapsed();
 
+        let recording_model = tm.desired_model();
+
         // Don't open the mic if nothing can transcribe the recording; the load
         // kicked off above fails and reports why.
         if !tm.is_model_loaded() {
-            let selected_model = get_settings(app).selected_model;
             if let Err(e) = app
                 .state::<Arc<ModelManager>>()
-                .get_model_path(&selected_model)
+                .get_model_path(&recording_model)
             {
                 warn!("Not starting recording: no model can transcribe it ({})", e);
                 return;
@@ -427,14 +453,14 @@ impl ShortcutAction for TranscribeAction {
         let settings = get_settings(app);
         let is_always_on = settings.always_on_microphone;
 
-        let selected_model_info = app
+        let recording_model_info = app
             .state::<Arc<ModelManager>>()
-            .get_model_info(&settings.selected_model);
+            .get_model_info(&recording_model);
 
         // Use the app-facing model capability as the single pre-recording source
         // for live streaming decisions. Unknown support is represented as false
         // until the model registry is updated by discovery or runtime load.
-        let model_supports_streaming = selected_model_info
+        let model_supports_streaming = recording_model_info
             .as_ref()
             .map(|m| m.supports_streaming)
             .unwrap_or(false);
@@ -869,6 +895,12 @@ pub static ACTION_MAP: Lazy<HashMap<String, Arc<dyn ShortcutAction>>> = Lazy::ne
     map.insert(
         "transcribe_with_post_process".to_string(),
         Arc::new(TranscribeAction { post_process: true }) as Arc<dyn ShortcutAction>,
+    );
+    map.insert(
+        TRANSCRIBE_SECONDARY_BINDING.to_string(),
+        Arc::new(TranscribeAction {
+            post_process: false,
+        }) as Arc<dyn ShortcutAction>,
     );
     map.insert(
         "cancel".to_string(),

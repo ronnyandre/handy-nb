@@ -305,7 +305,7 @@ pub fn resume_all_shortcuts(app: &AppHandle) {
         if id == "cancel" {
             continue;
         }
-        if id == "transcribe_with_post_process" && !settings.post_process_enabled {
+        if settings.is_binding_disabled(id) {
             continue;
         }
         if let Err(e) = register_shortcut(app, binding.clone()) {
@@ -496,8 +496,8 @@ fn register_all_shortcuts_for_implementation(
             continue;
         }
 
-        // Skip post-processing shortcut when the feature is disabled
-        if id == "transcribe_with_post_process" && !current_settings.post_process_enabled {
+        // Skip shortcuts whose feature is disabled
+        if current_settings.is_binding_disabled(id) {
             continue;
         }
 
@@ -1056,21 +1056,43 @@ pub fn change_post_process_enabled_setting(app: AppHandle, enabled: bool) -> Res
     settings.post_process_enabled = enabled;
     settings::write_settings(&app, settings.clone());
 
-    // Register or unregister the post-processing shortcut
-    if let Some(binding) = settings
-        .bindings
-        .get("transcribe_with_post_process")
-        .cloned()
-    {
-        if enabled {
-            let _ = register_shortcut(&app, binding);
+    sync_binding_registration(&app, &settings, "transcribe_with_post_process");
+    Ok(())
+}
+
+/// Register or unregister a feature-gated binding to match
+/// [`settings::AppSettings::is_binding_disabled`].
+fn sync_binding_registration(app: &AppHandle, settings: &settings::AppSettings, id: &str) {
+    if let Some(binding) = settings.bindings.get(id).cloned() {
+        let result = if settings.is_binding_disabled(id) {
+            unregister_shortcut(app, binding)
         } else {
-            let _ = unregister_shortcut(&app, binding);
+            register_shortcut(app, binding)
+        };
+        if let Err(e) = result {
+            warn!("Could not update shortcut '{}': {}", id, e);
         }
     }
+    crate::secure_input::reconcile_fallback(app);
+}
 
-    crate::secure_input::reconcile_fallback(&app);
+/// Set the model used by the secondary shortcut; an empty id disables it.
+#[tauri::command]
+#[specta::specta]
+pub fn change_secondary_model_setting(app: AppHandle, model_id: String) -> Result<(), String> {
+    let mut settings = settings::get_settings(&app);
+    settings.secondary_model = model_id;
+    settings::write_settings(&app, settings.clone());
+    sync_binding_registration(&app, &settings, settings::TRANSCRIBE_SECONDARY_BINDING);
     Ok(())
+}
+
+/// Turn the secondary shortcut off if it uses `model_id`, which is being
+/// deleted.
+pub fn clear_secondary_model_if(app: &AppHandle, model_id: &str) {
+    if settings::get_settings(app).secondary_model == model_id {
+        let _ = change_secondary_model_setting(app.clone(), String::new());
+    }
 }
 
 #[tauri::command]

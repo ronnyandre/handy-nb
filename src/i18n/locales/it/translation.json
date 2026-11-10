@@ -228,6 +228,10 @@
             "name": "Scorciatoia Trascrizione",
             "description": "La scorciatoia da tastiera per registrare e trascrivere la tua voce."
           },
+          "transcribe_secondary": {
+            "name": "Scorciatoia modello secondario",
+            "description": "La scorciatoia da tastiera per registrare e trascrivere con il modello secondario."
+          },
           "cancel": {
             "name": "Scorciatoia Annulla",
             "description": "La scorciatoia da tastiera per annullare la registrazione in corso."
@@ -685,6 +689,14 @@
       "whatsNewUpdates": {
         "label": "Mostra novità",
         "description": "Mostra le note di rilascio dopo gli aggiornamenti di Handy"
+      }
+    },
+    "secondaryModel": {
+      "title": "Modello secondario",
+      "model": {
+        "label": "Modello",
+        "description": "Usato al posto del modello selezionato quando registri con la scorciatoia secondaria. Il suo suggerimento di lingua vale solo per quelle registrazioni.",
+        "none": "Nessuno (scorciatoia disattivata)"
       }
     }
   },

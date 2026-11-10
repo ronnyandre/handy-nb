@@ -258,6 +258,9 @@ pub struct TranscriptionManager {
     is_loading: Arc<Mutex<bool>>,
     loading_condvar: Arc<Condvar>,
     reload_model_on_next_use: Arc<AtomicBool>,
+    /// Model chosen by the shortcut that started the current recording. Takes
+    /// precedence over `settings.selected_model` and is never persisted.
+    model_override: Arc<Mutex<Option<String>>>,
     /// Routes real-time audio frames to the active streaming worker; see
     /// [`StreamRouter`]. Shared with the audio recorder so per-frame feeds skip
     /// Tauri state and the manager lock.
@@ -294,6 +297,7 @@ impl TranscriptionManager {
             is_loading: Arc::new(Mutex::new(false)),
             loading_condvar: Arc::new(Condvar::new()),
             reload_model_on_next_use: Arc::new(AtomicBool::new(false)),
+            model_override: Arc::new(Mutex::new(None)),
             router: Arc::new(StreamRouter::new()),
             stream_active: Arc::new(AtomicBool::new(false)),
             next_stream_worker_id: Arc::new(AtomicU64::new(1)),
@@ -750,7 +754,11 @@ impl TranscriptionManager {
         }
 
         let reload_pending = self.reload_model_on_next_use.load(Ordering::Acquire);
-        if !reload_pending && self.is_model_loaded() {
+        let wanted_model = self.desired_model();
+        let wrong_model_loaded = self
+            .get_current_model()
+            .is_some_and(|loaded| loaded != wanted_model);
+        if !reload_pending && !wrong_model_loaded && self.is_model_loaded() {
             return;
         }
 
@@ -762,14 +770,77 @@ impl TranscriptionManager {
                     .reload_model_on_next_use
                     .store(false, Ordering::Release);
             }
-            let settings = get_settings(&self_clone.app_handle);
-            if let Err(e) = self_clone.load_model(&settings.selected_model) {
+            if let Err(e) = self_clone.load_model(&wanted_model) {
                 error!("Failed to load model: {}", e);
             }
             let mut is_loading = self_clone.is_loading.lock_or_recover();
             *is_loading = false;
             self_clone.loading_condvar.notify_all();
         });
+    }
+
+    /// Use `model_id` for recordings until the override is cleared with `None`.
+    pub fn set_model_override(&self, model_id: Option<String>) {
+        *self.model_override.lock_or_recover() = model_id;
+    }
+
+    /// The model the next recording should use: the shortcut's override, else
+    /// the persisted selection.
+    pub fn desired_model(&self) -> String {
+        self.model_override
+            .lock_or_recover()
+            .clone()
+            .unwrap_or_else(|| get_settings(&self.app_handle).selected_model)
+    }
+
+    /// Settings for the current recording. With a model override, that
+    /// model's language hint (or "auto") replaces the language intent; nothing
+    /// is written back.
+    fn recording_settings(&self) -> AppSettings {
+        let mut settings = get_settings(&self.app_handle);
+        if let Some(override_model) = self.model_override.lock_or_recover().clone() {
+            settings.selected_language = settings
+                .language_hint_for(&override_model)
+                .unwrap_or_else(|| "auto".to_string());
+        }
+        settings
+    }
+
+    /// Wait for an in-progress load, then reload if the loaded model is not
+    /// [`desired_model`](Self::desired_model). A load that was already running
+    /// may have been for the other shortcut's model.
+    fn ensure_desired_model_loaded(&self) -> Result<()> {
+        let wanted = self.desired_model();
+        let guard = {
+            let mut is_loading = self.is_loading.lock_or_recover();
+            while *is_loading {
+                is_loading = self
+                    .loading_condvar
+                    .wait(is_loading)
+                    .unwrap_or_else(|e| e.into_inner());
+            }
+            match self.get_current_model() {
+                Some(loaded) if loaded != wanted => {
+                    *is_loading = true;
+                    LoadingGuard {
+                        is_loading: self.is_loading.clone(),
+                        loading_condvar: self.loading_condvar.clone(),
+                    }
+                }
+                _ => return Ok(()),
+            }
+        };
+        info!(
+            "Loaded model is not '{}'; reloading before transcription",
+            wanted
+        );
+        let result = self.load_model(&wanted);
+        drop(guard);
+        result?;
+        if self.get_current_model().as_deref() != Some(wanted.as_str()) {
+            return Err(anyhow::anyhow!("Model '{}' could not be loaded", wanted));
+        }
+        Ok(())
     }
 
     pub fn get_current_model(&self) -> Option<String> {
@@ -852,6 +923,16 @@ impl TranscriptionManager {
         }
 
         let model_id = self.get_current_model().unwrap_or_default();
+        if model_id != self.desired_model() {
+            info!(
+                "Live preview: loaded model '{}' is not the one this recording uses; \
+                 falling back to batch transcription",
+                model_id
+            );
+            self.router.clear();
+            drain_until_finalize(rx);
+            return;
+        }
 
         // Take the engine out of the mutex so we own it during streaming,
         // structurally excluding any concurrent batch transcription (which
@@ -929,7 +1010,7 @@ impl TranscriptionManager {
 
         // Build run options mirroring the offline transcribe-cpp path: task +
         // language gated against what the model actually advertises.
-        let settings = get_settings(&self.app_handle);
+        let settings = self.recording_settings();
         let effective_language =
             effective_language_for_model(&settings, self.model_manager.as_ref(), &model_id);
         let run_plan = transcribe_cpp_run_plan(
@@ -1203,14 +1284,10 @@ impl TranscriptionManager {
             return Ok(String::new());
         }
 
-        // Check if model is loaded, if not try to load it
+        // Wait for any load to finish and make sure it loaded the model this
+        // recording asked for.
+        self.ensure_desired_model_loaded()?;
         {
-            // If the model is loading, wait for it to complete.
-            let mut is_loading = self.is_loading.lock_or_recover();
-            while *is_loading {
-                is_loading = self.loading_condvar.wait(is_loading).unwrap();
-            }
-
             let engine_guard = self.lock_engine();
             if engine_guard.is_none() {
                 return Err(anyhow::anyhow!("Model is not loaded for transcription."));
@@ -1218,7 +1295,7 @@ impl TranscriptionManager {
         }
 
         // Get current settings for configuration
-        let settings = get_settings(&self.app_handle);
+        let settings = self.recording_settings();
 
         // Validate selected language against the model's supported languages.
         // If the language isn't supported, fall back to "auto" to prevent errors.
@@ -1299,7 +1376,7 @@ impl TranscriptionManager {
                 model_languages = caps.languages;
                 debug!(
                     "transcribe-cpp model '{}' on '{}': initial_prompt={}, translate={}, languages={:?}",
-                    settings.selected_model,
+                    active_model,
                     model.backend(),
                     model_takes_initial_prompt,
                     model_supports_translate,

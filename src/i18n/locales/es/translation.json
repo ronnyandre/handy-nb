@@ -228,6 +228,10 @@
             "name": "Atajo de transcripción",
             "description": "El atajo de teclado para grabar y transcribir tu voz."
           },
+          "transcribe_secondary": {
+            "name": "Atajo del modelo secundario",
+            "description": "El atajo de teclado para grabar y transcribir con el modelo secundario."
+          },
           "cancel": {
             "name": "Atajo de cancelar",
             "description": "El atajo de teclado para cancelar la grabación actual."
@@ -685,6 +689,14 @@
       "whatsNewUpdates": {
         "label": "Mostrar novedades",
         "description": "Mostrar notas de la versión después de las actualizaciones de Handy"
+      }
+    },
+    "secondaryModel": {
+      "title": "Modelo secundario",
+      "model": {
+        "label": "Modelo",
+        "description": "Se usa en lugar del modelo seleccionado cuando grabas con el atajo secundario. Su indicación de idioma solo se aplica a esas grabaciones.",
+        "none": "Ninguno (atajo desactivado)"
       }
     }
   },

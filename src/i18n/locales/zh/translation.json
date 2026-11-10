@@ -228,6 +228,10 @@
             "name": "转录快捷键",
             "description": "用于录制和转录语音的键盘快捷键。"
           },
+          "transcribe_secondary": {
+            "name": "副模型快捷键",
+            "description": "使用副模型录音并转写的键盘快捷键。"
+          },
           "cancel": {
             "name": "取消快捷键",
             "description": "用于取消当前录制的键盘快捷键。"
@@ -685,6 +689,14 @@
       "whatsNewUpdates": {
         "label": "显示新功能",
         "description": "Handy 更新后显示发行说明"
+      }
+    },
+    "secondaryModel": {
+      "title": "副模型",
+      "model": {
+        "label": "模型",
+        "description": "使用副快捷键录音时，将代替所选模型使用。其语言提示仅适用于这些录音。",
+        "none": "无（快捷键关闭）"
       }
     }
   },

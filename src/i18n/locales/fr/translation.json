@@ -228,6 +228,10 @@
             "name": "Raccourci de Transcription",
             "description": "Le raccourci clavier pour enregistrer et transcrire votre voix."
           },
+          "transcribe_secondary": {
+            "name": "Raccourci du modèle secondaire",
+            "description": "Le raccourci clavier pour enregistrer et transcrire avec le modèle secondaire."
+          },
           "cancel": {
             "name": "Raccourci d'Annulation",
             "description": "Le raccourci clavier pour annuler l'enregistrement en cours."
@@ -685,6 +689,14 @@
       "whatsNewUpdates": {
         "label": "Afficher les nouveautés",
         "description": "Afficher les notes de version après les mises à jour de Handy"
+      }
+    },
+    "secondaryModel": {
+      "title": "Modèle secondaire",
+      "model": {
+        "label": "Modèle",
+        "description": "Utilisé à la place du modèle sélectionné lorsque vous enregistrez avec le raccourci secondaire. Son indication de langue ne s'applique qu'à ces enregistrements.",
+        "none": "Aucun (raccourci désactivé)"
       }
     }
   },

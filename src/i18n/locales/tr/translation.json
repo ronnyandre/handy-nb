@@ -228,6 +228,10 @@
             "name": "Transkripsiyon Kısayolu",
             "description": "Sesinizi kaydetmek ve metne dönüştürmek için klavye kısayolu."
           },
+          "transcribe_secondary": {
+            "name": "İkincil model kısayolu",
+            "description": "İkincil modelle kayıt ve yazıya dökme için klavye kısayolu."
+          },
           "cancel": {
             "name": "İptal Kısayolu",
             "description": "Mevcut kaydı iptal etmek için klavye kısayolu."
@@ -685,6 +689,14 @@
       "whatsNewUpdates": {
         "label": "Yenilikleri Göster",
         "description": "Handy güncellemelerinden sonra sürüm notlarını göster"
+      }
+    },
+    "secondaryModel": {
+      "title": "İkincil model",
+      "model": {
+        "label": "Model",
+        "description": "İkincil kısayolla kayıt yaptığınızda seçili model yerine kullanılır. Dil ipucu yalnızca bu kayıtlara uygulanır.",
+        "none": "Yok (kısayol kapalı)"
       }
     }
   },

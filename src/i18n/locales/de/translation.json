@@ -228,6 +228,10 @@
             "name": "Transkriptions-Tastenkürzel",
             "description": "Das Tastenkürzel zum Aufnehmen und Transkribieren deiner Stimme."
           },
+          "transcribe_secondary": {
+            "name": "Tastenkürzel für Zweitmodell",
+            "description": "Das Tastenkürzel, um mit dem Zweitmodell aufzunehmen und zu transkribieren."
+          },
           "cancel": {
             "name": "Abbrechen-Tastenkürzel",
             "description": "Das Tastenkürzel zum Abbrechen der aktuellen Aufnahme."
@@ -685,6 +689,14 @@
       "whatsNewUpdates": {
         "label": "Neuerungen anzeigen",
         "description": "Versionshinweise nach Handy-Updates anzeigen"
+      }
+    },
+    "secondaryModel": {
+      "title": "Zweitmodell",
+      "model": {
+        "label": "Modell",
+        "description": "Wird statt des ausgewählten Modells verwendet, wenn du mit dem Zweit-Tastenkürzel aufnimmst. Sein Sprachhinweis gilt nur für diese Aufnahmen.",
+        "none": "Keines (Tastenkürzel aus)"
       }
     }
   },

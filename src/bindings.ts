@@ -459,6 +459,17 @@ async changeShowInDockSetting(enabled: boolean) : Promise<Result<null, string>> 
     else return { status: "error", error: e  as any };
 }
 },
+/**
+ * Set the model used by the secondary shortcut; an empty id disables it.
+ */
+async changeSecondaryModelSetting(modelId: string) : Promise<Result<null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("change_secondary_model_setting", { modelId }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
 async changeTranscribeAcceleratorSetting(accelerator: TranscribeAcceleratorSetting) : Promise<Result<null, string>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("change_transcribe_accelerator_setting", { accelerator }) };
@@ -1068,6 +1079,11 @@ custom_models?: CustomModelDef[];
  * another model's hint applies.
  */
 language_from_hint?: boolean; 
+/**
+ * Model used by the `transcribe_secondary` shortcut. Empty disables that
+ * shortcut.
+ */
+secondary_model?: string; 
 /**
  * macOS: show the Dock icon at all times (true) or never (false). The
  * Dock icon is still shown when the tray icon is unavailable, so the app

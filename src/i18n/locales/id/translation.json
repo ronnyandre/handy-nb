@@ -174,6 +174,10 @@
             "name": "Pintasan Transkripsi",
             "description": "Pintasan keyboard untuk merekam dan mentranskripsikan suara Anda."
           },
+          "transcribe_secondary": {
+            "name": "Pintasan model sekunder",
+            "description": "Pintasan keyboard untuk merekam dan mentranskripsi dengan model sekunder."
+          },
           "cancel": {
             "name": "Pintasan Batal",
             "description": "Pintasan keyboard untuk membatalkan perekaman saat ini."
@@ -685,6 +689,14 @@
           "description": "Pustaka tensor berkinerja tinggi untuk inferensi pembelajaran mesin di perangkat",
           "details": "Fitur ucapan-ke-teks lokal Handy dibangun menggunakan transcribe.cpp dan ggml. Terima kasih kepada Georgi Gerganov dan para kontributor atas karya luar biasa mereka."
         }
+      }
+    },
+    "secondaryModel": {
+      "title": "Model sekunder",
+      "model": {
+        "label": "Model",
+        "description": "Dipakai sebagai pengganti model yang dipilih saat Anda merekam dengan pintasan sekunder. Petunjuk bahasanya hanya berlaku untuk rekaman tersebut.",
+        "none": "Tidak ada (pintasan nonaktif)"
       }
     }
   },

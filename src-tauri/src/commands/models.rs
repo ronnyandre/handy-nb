@@ -91,6 +91,8 @@ pub async fn delete_model(
         write_settings(&app_handle, settings);
     }
 
+    crate::shortcut::clear_secondary_model_if(&app_handle, &model_id);
+
     model_manager
         .delete_model(&model_id)
         .map_err(|e| e.to_string())
@@ -121,6 +123,9 @@ pub fn switch_active_model(app: &AppHandle, model_id: &str) -> Result<(), String
     if !model_info.is_downloaded {
         return Err(format!("Model not downloaded: {}", model_id));
     }
+
+    // A deliberate selection ends any per-shortcut model override.
+    transcription_manager.set_model_override(None);
 
     let settings = get_settings(app);
     let unload_timeout = settings.model_unload_timeout;
@@ -229,11 +234,7 @@ fn is_user_defined(model_id: &str) -> bool {
 /// is left alone. Switching to a model without a hint undoes a hint-set
 /// language.
 fn apply_language_hint(settings: &mut AppSettings, model_id: &str) {
-    let hint = settings
-        .custom_models
-        .iter()
-        .find(|d| d.id == model_id)
-        .and_then(|d| d.language_hint.clone());
+    let hint = settings.language_hint_for(model_id);
     let replaceable = settings.selected_language == "auto" || settings.language_from_hint;
     match hint {
         Some(language) if replaceable => {
@@ -341,6 +342,7 @@ pub async fn remove_custom_model(
     }
     settings.custom_models.retain(|d| d.id != model_id);
     write_settings(&app_handle, settings);
+    crate::shortcut::clear_secondary_model_if(&app_handle, &model_id);
     model_manager
         .unregister_user_defined_model(&model_id, delete_file)
         .map_err(|e| e.to_string())?;

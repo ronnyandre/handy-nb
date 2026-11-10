@@ -174,6 +174,10 @@
             "name": "Transskriptionsgenvej",
             "description": "Tastaturgenvejen til at optage og transskribere din stemme."
           },
+          "transcribe_secondary": {
+            "name": "Genvej til sekundær model",
+            "description": "Tastaturgenvejen til at optage og transskribere med den sekundære model."
+          },
           "cancel": {
             "name": "Annulleringsgenvej",
             "description": "Tastaturgenvejen til at annullere den aktuelle optagelse."
@@ -685,6 +689,14 @@
           "description": "Højtydende tensor-bibliotek til maskinlæringsinferens på enheden",
           "details": "Handys lokale tale-til-tekst funktionalitet er bygget på transcribe.cpp og ggml. Tak for det fantastiske arbejde af Georgi Gerganov og bidragyderne."
         }
+      }
+    },
+    "secondaryModel": {
+      "title": "Sekundær model",
+      "model": {
+        "label": "Model",
+        "description": "Bruges i stedet for den valgte model, når du optager med den sekundære genvej. Dens sprogtip gælder kun for disse optagelser.",
+        "none": "Ingen (genvej slået fra)"
       }
     }
   },

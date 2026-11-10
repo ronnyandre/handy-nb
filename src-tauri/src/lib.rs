@@ -809,6 +809,7 @@ pub fn run(cli_args: CliArgs) {
             shortcut::get_keyboard_implementation,
             shortcut::change_show_tray_icon_setting,
             shortcut::change_show_in_dock_setting,
+            shortcut::change_secondary_model_setting,
             shortcut::change_transcribe_accelerator_setting,
             shortcut::change_ort_accelerator_setting,
             shortcut::change_transcribe_gpu_device,

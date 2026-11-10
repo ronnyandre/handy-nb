@@ -157,6 +157,14 @@
     }
   },
   "settings": {
+    "secondaryModel": {
+      "title": "Secondary Model",
+      "model": {
+        "label": "Model",
+        "description": "Used instead of the selected model when you record with the secondary shortcut. Its language hint applies to those recordings only.",
+        "none": "None (shortcut off)"
+      }
+    },
     "modelSettings": {
       "title": "{{model}} Settings"
     },
@@ -173,6 +181,10 @@
           "transcribe": {
             "name": "Transcribe Shortcut",
             "description": "The keyboard shortcut to record and transcribe your voice."
+          },
+          "transcribe_secondary": {
+            "name": "Secondary Model Shortcut",
+            "description": "The keyboard shortcut to record and transcribe with the secondary model."
           },
           "cancel": {
             "name": "Cancel Shortcut",

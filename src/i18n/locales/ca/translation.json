@@ -174,6 +174,10 @@
             "name": "Drecera de transcripció",
             "description": "La drecera de teclat per enregistrar i transcriure la vostra veu."
           },
+          "transcribe_secondary": {
+            "name": "Drecera del model secundari",
+            "description": "La drecera de teclat per enregistrar i transcriure amb el model secundari."
+          },
           "cancel": {
             "name": "Drecera de cancel·lació",
             "description": "La drecera de teclat per cancel·lar l'enregistrament actual."
@@ -685,6 +689,14 @@
           "description": "Biblioteca de tensors d'alt rendiment per a la inferència d'aprenentatge automàtic al dispositiu",
           "details": "La transcripció local de veu a text del Handy es basa en el transcribe.cpp i el ggml. Gràcies a la gran feina de Georgi Gerganov i dels col·laboradors."
         }
+      }
+    },
+    "secondaryModel": {
+      "title": "Model secundari",
+      "model": {
+        "label": "Model",
+        "description": "S'utilitza en lloc del model seleccionat quan enregistres amb la drecera secundària. La seva pista d'idioma només s'aplica a aquests enregistraments.",
+        "none": "Cap (drecera desactivada)"
       }
     }
   },

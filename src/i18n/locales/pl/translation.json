@@ -228,6 +228,10 @@
             "name": "Skrót transkrypcji",
             "description": "Skrót klawiaturowy do nagrywania i transkrypcji głosu."
           },
+          "transcribe_secondary": {
+            "name": "Skrót modelu dodatkowego",
+            "description": "Skrót klawiszowy do nagrywania i transkrypcji za pomocą modelu dodatkowego."
+          },
           "cancel": {
             "name": "Skrót anulowania",
             "description": "Skrót klawiaturowy do anulowania bieżącego nagrywania."
@@ -685,6 +689,14 @@
       "whatsNewUpdates": {
         "label": "Pokaż nowości",
         "description": "Pokazuj informacje o wydaniu po aktualizacjach Handy"
+      }
+    },
+    "secondaryModel": {
+      "title": "Model dodatkowy",
+      "model": {
+        "label": "Model",
+        "description": "Używany zamiast wybranego modelu, gdy nagrywasz skrótem dodatkowym. Jego wskazówka językowa dotyczy tylko tych nagrań.",
+        "none": "Brak (skrót wyłączony)"
       }
     }
   },

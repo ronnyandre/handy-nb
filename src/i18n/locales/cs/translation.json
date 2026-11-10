@@ -228,6 +228,10 @@
             "name": "Zkratka přepisu",
             "description": "Klávesová zkratka pro nahrávání a přepis vašeho hlasu."
           },
+          "transcribe_secondary": {
+            "name": "Zkratka sekundárního modelu",
+            "description": "Klávesová zkratka pro nahrávání a přepis pomocí sekundárního modelu."
+          },
           "cancel": {
             "name": "Zkratka zrušení",
             "description": "Klávesová zkratka pro zrušení aktuálního nahrávání."
@@ -685,6 +689,14 @@
       "whatsNewUpdates": {
         "label": "Zobrazovat novinky",
         "description": "Zobrazovat poznámky k vydání po aktualizacích Handy"
+      }
+    },
+    "secondaryModel": {
+      "title": "Sekundární model",
+      "model": {
+        "label": "Model",
+        "description": "Použije se místo vybraného modelu, když nahráváte sekundární zkratkou. Jeho jazyková nápověda platí jen pro tyto nahrávky.",
+        "none": "Žádný (zkratka vypnuta)"
       }
     }
   },

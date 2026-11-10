@@ -539,6 +539,10 @@ pub struct AppSettings {
     /// another model's hint applies.
     #[serde(default)]
     pub language_from_hint: bool,
+    /// Model used by the `transcribe_secondary` shortcut. Empty disables that
+    /// shortcut.
+    #[serde(default)]
+    pub secondary_model: String,
     /// macOS: show the Dock icon at all times (true) or never (false). The
     /// Dock icon is still shown when the tray icon is unavailable, so the app
     /// stays reachable.
@@ -925,6 +929,29 @@ fn ensure_post_process_defaults(settings: &mut AppSettings) -> bool {
 
 pub const SETTINGS_STORE_PATH: &str = "settings_store.json";
 
+/// Binding id of the shortcut that records with `AppSettings::secondary_model`.
+pub const TRANSCRIBE_SECONDARY_BINDING: &str = "transcribe_secondary";
+
+impl AppSettings {
+    /// The language hint of a user-defined model, if it has one.
+    pub fn language_hint_for(&self, model_id: &str) -> Option<String> {
+        self.custom_models
+            .iter()
+            .find(|d| d.id == model_id)
+            .and_then(|d| d.language_hint.clone())
+    }
+
+    /// Whether a binding is switched off by the feature it belongs to, and so
+    /// must not be registered.
+    pub fn is_binding_disabled(&self, id: &str) -> bool {
+        match id {
+            "transcribe_with_post_process" => !self.post_process_enabled,
+            TRANSCRIBE_SECONDARY_BINDING => self.secondary_model.is_empty(),
+            _ => false,
+        }
+    }
+}
+
 pub fn get_default_settings() -> AppSettings {
     #[cfg(target_os = "windows")]
     let default_shortcut = "ctrl+space";
@@ -964,6 +991,25 @@ pub fn get_default_settings() -> AppSettings {
                 .to_string(),
             default_binding: default_post_process_shortcut.to_string(),
             current_binding: default_post_process_shortcut.to_string(),
+        },
+    );
+    #[cfg(target_os = "windows")]
+    let default_secondary_shortcut = "ctrl+alt+space";
+    #[cfg(target_os = "macos")]
+    let default_secondary_shortcut = "ctrl+option+e";
+    #[cfg(target_os = "linux")]
+    let default_secondary_shortcut = "ctrl+alt+space";
+    #[cfg(not(any(target_os = "windows", target_os = "macos", target_os = "linux")))]
+    let default_secondary_shortcut = "alt+e";
+
+    bindings.insert(
+        TRANSCRIBE_SECONDARY_BINDING.to_string(),
+        ShortcutBinding {
+            id: TRANSCRIBE_SECONDARY_BINDING.to_string(),
+            name: "Transcribe with Secondary Model".to_string(),
+            description: "Converts your speech into text using the secondary model.".to_string(),
+            default_binding: default_secondary_shortcut.to_string(),
+            current_binding: default_secondary_shortcut.to_string(),
         },
     );
     bindings.insert(
@@ -1011,6 +1057,7 @@ pub fn get_default_settings() -> AppSettings {
         clipboard_handling: ClipboardHandling::default(),
         auto_submit: default_auto_submit(),
         auto_submit_key: AutoSubmitKey::default(),
+        secondary_model: String::new(),
         post_process_enabled: default_post_process_enabled(),
         post_process_provider_id: default_post_process_provider_id(),
         post_process_providers: default_post_process_providers(),
@@ -1780,6 +1827,15 @@ mod tests {
             assert_eq!(settings.selected_language, language);
             assert_eq!(settings.chinese_script, script);
         }
+    }
+
+    #[test]
+    fn secondary_binding_is_disabled_until_a_model_is_chosen() {
+        let mut settings = get_default_settings();
+        assert!(settings.is_binding_disabled(TRANSCRIBE_SECONDARY_BINDING));
+        settings.secondary_model = "custom:a/b/en.bin".to_string();
+        assert!(!settings.is_binding_disabled(TRANSCRIBE_SECONDARY_BINDING));
+        assert!(!settings.is_binding_disabled("transcribe"));
     }
 
     #[test]
